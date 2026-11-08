@@ -380,16 +380,34 @@ def extract_frames(candidate, video_path, frames_dir, count):
     return frames
 
 
-def write_outputs(args, prompt, queries, candidates, downloads, dropped, stats, out_dir):
+def reject_overlong_video(video, rejected_dir, max_duration):
+    duration = video.get("duration") or 0
+    if max_duration <= 0 or duration <= 0 or duration <= max_duration:
+        return None
+    source = Path(video["file"])
+    rejected_dir.mkdir(parents=True, exist_ok=True)
+    target = rejected_dir / source.name
+    suffix = 1
+    while target.exists():
+        target = rejected_dir / ("%s_%d%s" % (source.stem, suffix, source.suffix))
+        suffix += 1
+    source.rename(target)
+    video["file"] = str(target)
+    return "超时 %gs > %gs" % (duration, max_duration)
+
+
+def write_outputs(args, prompt, queries, candidates, downloads, rejected, dropped, stats, out_dir):
     now = datetime.datetime.now().isoformat(timespec="seconds")
     manifest = {
         "prompt": prompt,
         "generated_at": now,
         "sort": args.sort,
+        "max_duration_seconds": args.max_duration,
         "queries": queries,
         "stats": stats,
         "candidates": candidates,
         "downloads": downloads,
+        "rejected": rejected,
         "dropped_non_car_sample": [
             {"id": str(t.get("id")), "url": t.get("url"),
              "text": (t.get("text") or "")[:120]} for t in dropped[:10]
@@ -406,12 +424,14 @@ def write_outputs(args, prompt, queries, candidates, downloads, dropped, stats, 
 
     by_likes = sort_candidates(candidates, "likes")
     by_replies = sort_candidates(candidates, "replies")
+    duration_rule = "不超过 %g 秒" % args.max_duration if args.max_duration > 0 else "不限制"
     lines = ["# X 汽车视频搜索报告", "",
              "- 提示词：%s" % prompt,
              "- 生成时间：%s" % now,
              "- 排序：%s（%s）" % (args.sort, SORT_FIELDS[args.sort]),
-             "- 检索式：%d 组，候选视频推文 %d 条，非汽车剔除 %d 条，下载 %d 条" % (
-                 len(queries), len(candidates), len(dropped), len(downloads)),
+             "- 视频时长：%s" % duration_rule,
+             "- 检索式：%d 组，候选视频推文 %d 条，非汽车剔除 %d 条，入选 %d 条，淘汰 %d 条" % (
+                 len(queries), len(candidates), len(dropped), len(downloads), len(rejected)),
              "", "## 检索式", ""]
     for query in queries:
         lines.append("- `%s`" % query)
@@ -438,6 +458,8 @@ def write_outputs(args, prompt, queries, candidates, downloads, dropped, stats, 
                 video["width"], video["height"], video["duration"],
                 item["candidate"]["likes"], item["candidate"]["replies"],
                 item["candidate"]["url"]))
+    elif rejected:
+        lines.append("（本次下载的视频均因超时被淘汰。）")
     else:
         lines.append("（本次未下载；加 `--top N` 或去掉 `--dry-run` 即可下载。）")
     if downloads:
@@ -446,8 +468,16 @@ def write_outputs(args, prompt, queries, candidates, downloads, dropped, stats, 
             lines.append("- `%s`：" % item["candidate"]["url"])
             for frame in item["frames"]:
                 lines.append("  - `%s`（第 %.1fs）" % (frame["file"], frame["at_sec"]))
-    lines += ["", "> 文件：`videos/` 视频、`frames/` 抽帧、`manifest.json` 全量元数据、"
-                  "`candidates.csv` 可自行排序。"]
+    if rejected:
+        lines += ["", "## 淘汰清单", "",
+                  "| 文件 | 时长 | 原帖 | 淘汰原因 |",
+                  "|---|---|---|---|"]
+        for item in rejected:
+            lines.append("| `%s` | %.1fs | %s | %s |" % (
+                os.path.basename(item["video"]["file"]), item["video"]["duration"],
+                item["candidate"]["url"], item["reason"]))
+    lines += ["", "> 文件：`videos/` 入选视频、`rejected/` 淘汰视频、`frames/` 抽帧、"
+                  "`manifest.json` 全量元数据、`candidates.csv` 可自行排序。"]
     (out_dir / "REPORT.md").write_text("\n".join(lines) + "\n")
 
     log("报告: %s" % (out_dir / "REPORT.md"))
@@ -474,12 +504,17 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-car-filter", action="store_true")
     ap.add_argument("--max-height", type=int, default=1080)
+    ap.add_argument("--max-duration", type=float, default=300,
+                    help="视频时长上限（秒），默认 300（5 分钟），0 表示不限制")
     ap.add_argument("--frames", type=int, default=2)
     args = ap.parse_args()
+    if args.max_duration < 0:
+        die("--max-duration 不能小于 0")
 
     out_dir = Path(args.out).resolve()
     raw_dir = out_dir / "raw"
     videos_dir = out_dir / "videos"
+    rejected_dir = out_dir / "rejected"
     frames_dir = out_dir / "frames"
     for directory in (out_dir, raw_dir):
         directory.mkdir(parents=True, exist_ok=True)
@@ -531,22 +566,31 @@ def main():
     stats = {"queries": len(queries), "candidates": len(candidates),
              "dropped_non_car": len(dropped), "requested_top": args.top}
 
-    downloads = []
+    downloads, rejected = [], []
     if not args.dry_run and args.top > 0:
         for candidate in ranked[:args.top]:
             video, error = download_video(candidate, videos_dir, args)
             if not video:
                 log("  跳过 %s（%s）" % (candidate["url"], str(error)[:120]))
                 continue
+            reason = reject_overlong_video(video, rejected_dir, args.max_duration)
+            if reason:
+                log("  淘汰 %s（%s）" % (candidate["url"], reason))
+                rejected.append({"candidate": candidate, "video": video, "reason": reason})
+                continue
             frames = extract_frames(candidate, video["file"], frames_dir, args.frames)
             downloads.append({"candidate": candidate, "video": video, "frames": frames})
 
-    write_outputs(args, args.prompt, queries, ranked, downloads, dropped, stats, out_dir)
+    stats["rejected_over_duration"] = len(rejected)
+    write_outputs(args, args.prompt, queries, ranked, downloads, rejected, dropped, stats, out_dir)
 
-    print("完成：%d 条候选，%d 条已下载。" % (len(candidates), len(downloads)))
+    print("完成：%d 条候选，%d 条入选，%d 条超时淘汰。" % (
+        len(candidates), len(downloads), len(rejected)))
     if downloads:
         print("视频目录: %s" % videos_dir)
         print("抽帧目录: %s（用 read_image 核验）" % frames_dir)
+    if rejected:
+        print("淘汰目录: %s" % rejected_dir)
     print("报告: %s" % (out_dir / "REPORT.md"))
 
 

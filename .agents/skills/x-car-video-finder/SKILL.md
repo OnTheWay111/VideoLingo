@@ -69,6 +69,8 @@ DSH 的本地 skill 提供方只扫描下列根（rank 越高优先级越低）�
 
 ## 用法
 
+**默认时长规则：视频时长不得超过 5 分钟（300 秒）。** 正好 300 秒可以入选；超过 300 秒的视频会自动移入 `rejected/`，并写入 `REPORT.md` 和 `manifest.json` 的淘汰清单。可用 `--max-duration 秒数` 调整上限，显式传 `--max-duration 0` 可关闭限制。
+
 最少一行（自动把提示词展开成多组检索式）：
 
 ```bash
@@ -121,6 +123,7 @@ python3 .../finder.py \
 | `--dry-run` | 关 | 只搜索+排序+报告，不下载 |
 | `--no-car-filter` | 关 | 关闭汽车关键词过滤（会混入非汽车内容） |
 | `--max-height` | `1080` | 下载分辨率上限 |
+| `--max-duration` | `300` | 视频时长上限（秒），超过则自动淘汰；`0` 表示不限制 |
 | `--frames` | `2` | 每条视频抽帧数（0 = 不抽） |
 
 ## 输出
@@ -129,11 +132,11 @@ python3 .../finder.py \
 work/xfetch-run/
 ├── raw/                 # 每组检索式的原始 JSONL
 ├── videos/              # 最终入选的 mp4（<uploader>_<tweet_id>.mp4）
-├── rejected/            # 被淘汰的 mp4（超时/画面不符），备查
+├── rejected/            # 被淘汰的 mp4（超过时长上限/画面不符），备查
 ├── frames/              # 抽帧 jpg（Agent 用 read_image 核验）
-├── manifest.json        # 候选、排序、下载、抽帧的完整元数据
+├── manifest.json        # 候选、排序、下载、抽帧和淘汰原因的完整元数据
 ├── candidates.csv       # 全部候选（含点赞/评论/播放），可直接排序
-└── REPORT.md            # 中文报告：检索式、点赞榜、评论榜、下载清单
+└── REPORT.md            # 中文报告：检索式、榜单、入选清单和淘汰清单
 ```
 
 stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），可直接粘给用户。
@@ -144,9 +147,9 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
 2. 确认 `xfetch auth check` 通过；未登录先走上面三种方式之一。
 3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。
 4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：
-   - **时长**：`ffprobe -v error -show_entries format=duration -of csv=p=0 <file>`，超出用户时长上限的淘汰；
+   - **时长**：默认上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
-   - 被淘汰的视频不要删除，移入 `<out>/rejected/` 备查。
+   - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查。
 5. 按下面「最终汇报格式」输出**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；提醒版权与平台条款。
 
 ## 最终汇报格式（必选）
