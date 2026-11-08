@@ -68,3 +68,23 @@ def test_report_and_manifest_include_duration_rejection(tmp_path):
     assert "- 视频时长：不超过 300 秒" in report
     assert "## 淘汰清单" in report
     assert "超时 301.0s > 300s" in report
+    assert "| 文件名 | 本地路径 | 时长 | 原帖 | 淘汰原因 |" in report
+    assert "`clip.mp4`" in report
+    assert "`%s`" % (tmp_path / "rejected") in report
+
+
+def test_download_report_includes_filename_and_absolute_directory(tmp_path):
+    candidate = {
+        "id": "1", "url": "https://x.com/car/status/1", "author": "car",
+        "author_name": "Car", "date": "2026-11-08", "likes": 10,
+        "replies": 2, "reposts": 3, "views": 100, "text": "Car video",
+    }
+    downloads = [{"candidate": candidate, "video": make_video(tmp_path, 31), "frames": []}]
+    args = SimpleNamespace(sort="likes", max_duration=300)
+
+    finder.write_outputs(args, "汽车", ["car filter:media"], [candidate], downloads, [], [], {}, tmp_path)
+
+    report = (tmp_path / "REPORT.md").read_text()
+    assert "| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |" in report
+    assert "`clip.mp4`" in report
+    assert "`%s`" % (tmp_path / "videos") in report

@@ -449,12 +449,13 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
             c["replies"], c["likes"], c["author"], c["date"], c["url"]))
     lines += ["", "## 下载清单", ""]
     if downloads:
-        lines += ["| 文件 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |",
-                  "|---|---|---|---|---|---|---|"]
+        lines += ["| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |",
+                  "|---|---|---|---|---|---|---|---|"]
         for item in downloads:
             video = item["video"]
-            lines.append("| `%s` | @%s | %dx%d | %.1fs | %d | %d | %s |" % (
-                os.path.basename(video["file"]), item["candidate"]["author"],
+            lines.append("| `%s` | `%s` | @%s | %dx%d | %.1fs | %d | %d | %s |" % (
+                os.path.basename(video["file"]),
+                os.path.dirname(os.path.abspath(video["file"])), item["candidate"]["author"],
                 video["width"], video["height"], video["duration"],
                 item["candidate"]["likes"], item["candidate"]["replies"],
                 item["candidate"]["url"]))
@@ -470,12 +471,13 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
                 lines.append("  - `%s`（第 %.1fs）" % (frame["file"], frame["at_sec"]))
     if rejected:
         lines += ["", "## 淘汰清单", "",
-                  "| 文件 | 时长 | 原帖 | 淘汰原因 |",
-                  "|---|---|---|---|"]
+                  "| 文件名 | 本地路径 | 时长 | 原帖 | 淘汰原因 |",
+                  "|---|---|---|---|---|"]
         for item in rejected:
-            lines.append("| `%s` | %.1fs | %s | %s |" % (
-                os.path.basename(item["video"]["file"]), item["video"]["duration"],
-                item["candidate"]["url"], item["reason"]))
+            lines.append("| `%s` | `%s` | %.1fs | %s | %s |" % (
+                os.path.basename(item["video"]["file"]),
+                os.path.dirname(os.path.abspath(item["video"]["file"])),
+                item["video"]["duration"], item["candidate"]["url"], item["reason"]))
     lines += ["", "> 文件：`videos/` 入选视频、`rejected/` 淘汰视频、`frames/` 抽帧、"
                   "`manifest.json` 全量元数据、`candidates.csv` 可自行排序。"]
     (out_dir / "REPORT.md").write_text("\n".join(lines) + "\n")
