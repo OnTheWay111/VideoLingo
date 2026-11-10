@@ -1,0 +1,134 @@
+---
+name: wechat-hot-article
+description: 输入一个主题，自动衔接 web-content-fetcher 与 zailushang-article：筛选 X 热点、核查事实、推荐选题，确认后生成公众号 article.md 和 article.html。适用于“搜热点写公众号”“围绕某主题写热点文章”等需求。
+license: MIT
+---
+
+# 热点公众号文章（wechat-hot-article）
+
+把一句主题输入变成「热点检索 → 语义复核 → 事实核查 → 选题确认 → 文章设计确认 → Markdown + 公众号 HTML」的连续工作流。
+
+本 Skill 只负责编排。筛选规则归 `web-content-fetcher`，正文与文风范式归 `zailushang-article`；不得绕过两者的质量门槛。
+
+## 最简用法
+
+```text
+/wechat-hot-article OpenAI Codex
+```
+
+默认查找最近 7 天的高热内容，按点赞排序。检索后先给用户选题，不直接写成文章。
+
+可选写法：
+
+```text
+/wechat-hot-article AI 编程工具 --mode news
+/wechat-hot-article OpenAI Codex --sort replies
+/wechat-hot-article OpenAI Codex --web-session chrome --browser-profile Default
+```
+
+如果缺少主题，只问一句“想围绕什么主题找热点并写公众号文章？”
+
+## 输入解析
+
+主题之外的参数均可省略：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--mode hot\|news` | `hot` | `hot`：Top 视图、最近 7 天、按点赞；`news`：Latest 视图、当天、按评论 |
+| `--sort likes\|replies\|reposts\|views` | 按 mode | 本地互动排序，不改变 X 检索视图 |
+| `--since YYYY-MM-DD` | 按 mode | 覆盖默认起始日期 |
+| `--reader <读者>` | 选题时推荐 | 核心读者，不平均迎合多个群体 |
+| `--viewpoint <观点>` | 选题时推荐 | 用户已明确观点时必须保留为文章主线 |
+| `--web-session <浏览器>` | `off` | 只有用户显式提供才可读取浏览器会话 |
+| `--browser-profile <Profile>` | 浏览器默认 | 与 `--web-session` 配合 |
+| `--cookies-file <路径>` | 无 | 与 `--web-session` 二选一 |
+| `--out <目录>` | 自动日期目录 | 本次工作流根目录 |
+
+不要在参数解析阶段要求用户一次性补齐观点、经历和素材。先检索，再用候选帮助用户做选择。
+
+默认输出：
+
+```text
+work/wechat/<YYYYMMDD>-<slug>/
+├── fetch/                 # web-content-fetcher 原始输出
+├── input-pack.md          # 选定题后的写作输入包
+└── article/
+    ├── design.md          # 第一次文章设计确认
+    ├── article.md         # 正文源文件
+    └── article.html       # 公众号粘贴版
+```
+
+## 阶段 1：热点检索与筛选
+
+1. 从主题提取规范主题、必要别名和 X 检索式。别名只覆盖实际产品或概念名称，不为扩大数量加入无关品牌词。
+2. 按 `web-content-fetcher` 的公开用法调用其 `scripts/web_content.py`，使用 `--topic`、必要的 `--topic-alias`、`--query`、`--limit 50 --min-wechat-score 70 --out <根目录>/fetch`。
+3. 未验证的检索式或会话先小批量测试，通过后再扩大到 50 条；已验证时可直接抓取 50 条。
+4. 未显式指定浏览器或 Cookie 文件时保持 `--web-session off`，不得自行选择浏览器、Profile 或凭据。
+5. 检查 `manifest.json` 的错误和候选统计。没有候选时如实报告失败；有候选但全部淘汰时报告“没有合适内容”，不得使用 `rejected.jsonl` 凑数。
+6. 阅读入选正文做语义复核，确认主题由正文前两句主导、新闻点或实用信息清楚；必要时复核淘汰清单纠正明显误判。
+7. 互动排序只代表本次已抓取且通过筛选的候选，不称为 X 全量热榜。报告候选数、入选数、淘汰数和互动数据抓取时间。
+
+## 阶段 2：核查事实并推荐选题
+
+对最有写作价值的候选，用官方文档、公告或一手来源核实产品行为、版本、价格、日期、故障等易变事实。互动量和公众号适配分不代表真实性。
+
+向用户展示最多 3 个实际可行的选题；不足 3 个时按实际数量展示。每个选题只包含：
+
+- 推荐角度及核心读者；
+- 可主张的核心观点；
+- 主线热点、关键互动数据和原始 URL；
+- 已核实事实及一手来源；
+- 还缺少的真实经历或材料；
+- 主要事实或版权风险。
+
+优先推荐“热点作引子、实践或判断作主线”的角度，避免热帖摘要、引流话术和未经核实的收益宣传。
+
+**在这里暂停。** 用户可只回复“选 1”，也可补充“选 1，观点是……，读者是……”。用户确认前不得生成 `design.md` 或正文。
+
+## 阶段 3：生成写作输入包
+
+将选定内容写入 `<根目录>/input-pack.md`，至少包含：
+
+```markdown
+# 写作输入包
+
+## 主题
+## 核心读者
+## 核心观点
+## 热点主线
+新闻点、原始 URL、互动数据及抓取时间、选题理由。
+## 已核实事实
+逐项记录事实和一手来源 URL；未经核实的内容明确标记，不写成事实。
+## 支持材料
+用于佐证的入选帖、对比观察、工具行为或数据。
+## 真实经历
+用户提供的经历原文；缺失时写明需要 `[补充你的真实经历]`，不得虚构。
+## 事实边界与版权注意
+## 输出要求
+WeChat-ready HTML；article.md 与 article.html 写入 <根目录>/article/。
+```
+
+热点是背景与证据，用户的观点和真实材料是文章主线。只选 1 条主线热点，佐证通常不超过 4 条。
+
+## 阶段 4：调用写作 Skill
+
+调用 `Skill` 工具加载 `zailushang-article`，把 `input-pack.md` 的内容和输出路径作为写作输入，明确要求：
+
+- 目的地为微信公众号，使用 `WeChat-ready HTML` 模式；
+- 先完成并保存 `<根目录>/article/design.md`；
+- 保留已确认的核心观点、事实边界和真实经历；
+- 不生成或要求 `hero.png`，不切换到 `human-wechat-article` 的出版流程。
+
+**在 `design.md` 后再次暂停。** 用户回复“确认”或给出修改后，继续同一写作工作流生成完整 `article.md`，通过 Human-Feel Quality Gate，再生成 `article.html`。不得把设计稿当成文章交付。
+
+## 完成报告
+
+最终只需向用户提供：
+
+- `article.md` 和 `article.html` 的绝对路径；
+- 选题、核心读者和核心观点的一句话摘要；
+- 事实核查及公众号粘贴 readiness 结果；
+- 仍需用户补充的经历占位（如有）；
+- 提醒人工预览并发布，本 Skill 不执行外部发布。
+
+不要在最终回复中重复整篇正文，不要声称已经发布，也不要把中间检索或设计状态称为完成。
