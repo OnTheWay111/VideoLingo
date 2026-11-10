@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用最终标题和推荐正文重命名视频、抽帧，并生成发布表格。"""
+"""用最终标题、推荐正文和话题重命名视频、抽帧，并生成发布表格。"""
 
 import argparse
 import datetime
@@ -9,8 +9,8 @@ from pathlib import Path
 
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
 END_MARKER = "<!-- PUBLISH_TABLES_END -->"
-TABLE_HEADER = "| # | 标题名 | 推荐正文 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |"
-TABLE_SEPARATOR = "|---|---|---|---|---|---|---|---|"
+TABLE_HEADER = "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |"
+TABLE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
 
 
 def safe_title(title, max_length=48):
@@ -19,6 +19,29 @@ def safe_title(title, max_length=48):
     if not title:
         raise ValueError("标题不能为空或只包含文件系统保留字符")
     return title[:max_length].rstrip(" .")
+
+
+def load_topics(item, tweet_id):
+    raw_topics = item.get("topics")
+    if raw_topics is None:
+        return ["#汽车", "#改装车"]
+    if not isinstance(raw_topics, list):
+        raise ValueError("推文 %s 的 topics 必须是字符串数组" % tweet_id)
+    topics = []
+    for raw_topic in raw_topics:
+        if not isinstance(raw_topic, str):
+            raise ValueError("推文 %s 的 topics 必须是字符串数组" % tweet_id)
+        topic = re.sub(r"\s+", "", raw_topic.strip())
+        if not topic:
+            raise ValueError("推文 %s 的 topics 不能包含空话题" % tweet_id)
+        topic = topic if topic.startswith("#") else "#" + topic
+        if topic == "#":
+            raise ValueError("推文 %s 的 topics 不能包含空话题" % tweet_id)
+        if topic not in topics:
+            topics.append(topic)
+    if not topics:
+        raise ValueError("推文 %s 的 topics 不能为空数组" % tweet_id)
+    return topics
 
 
 def load_publish(path):
@@ -33,7 +56,11 @@ def load_publish(path):
         body = str(item.get("body") or "").strip()
         if not title or not body:
             raise ValueError("推文 %s 缺少 title 或 body" % tweet_id)
-        result[str(tweet_id)] = {"title": title, "body": body}
+        result[str(tweet_id)] = {
+            "title": title,
+            "body": body,
+            "topics": load_topics(item, tweet_id),
+        }
     return result
 
 
@@ -49,6 +76,7 @@ def render_row(item, index, rejected=False):
         index,
         item["title"],
         item["recommendation"],
+        " ".join(item["topics"]),
         "`%s`" % path.name,
         str(path.parent.resolve()),
         "%.1fs" % video["duration"],
@@ -94,6 +122,17 @@ def prepare_rename(source, target):
     return source, target
 
 
+def resolve_source(source, tweet_id, suffix, frame_index=None):
+    if source.is_file():
+        return source
+    id_suffix = "%s%s" % (tweet_id, suffix) if frame_index is None else "%s_%d%s" % (
+        tweet_id, frame_index, suffix)
+    matches = list(source.parent.glob("*_" + id_suffix))
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError("媒体文件不存在或无法唯一匹配：%s" % source)
+
+
 def finalize(out_dir, publish_file):
     out_dir = Path(out_dir).resolve()
     manifest_path = out_dir / "manifest.json"
@@ -107,28 +146,32 @@ def finalize(out_dir, publish_file):
         raise ValueError("发布内容与 manifest 不一致；缺少=%s，多余=%s" % (missing, unknown))
 
     operations = []
-    for item in items:
-        candidate = item["candidate"]
-        tweet_id = str(candidate["id"])
-        content = publish[tweet_id]
-        title = safe_title(content["title"])
-        video = item["video"]
-        source = Path(video["file"]).resolve()
-        target = source.with_name("%s_%s%s" % (title, tweet_id, source.suffix))
-        operation = prepare_rename(source, target)
-        if operation:
-            operations.append(operation)
-        video["file"] = str(target)
-        for index, frame in enumerate(item.get("frames", []), 1):
-            frame_source = Path(frame["file"]).resolve()
-            frame_target = frame_source.with_name("%s_%s_%d%s" % (
-                title, tweet_id, index, frame_source.suffix))
-            operation = prepare_rename(frame_source, frame_target)
+    for group in (manifest.get("downloads", []), manifest.get("rejected", [])):
+        for number, item in enumerate(group, 1):
+            candidate = item["candidate"]
+            tweet_id = str(candidate["id"])
+            content = publish[tweet_id]
+            title = safe_title(content["title"])
+            video = item["video"]
+            source = Path(video["file"]).resolve()
+            source = resolve_source(source, tweet_id, source.suffix)
+            target = source.with_name("%d.%s_%s%s" % (number, title, tweet_id, source.suffix))
+            operation = prepare_rename(source, target)
             if operation:
                 operations.append(operation)
-            frame["file"] = str(frame_target)
-        item["title"] = content["title"]
-        item["recommendation"] = content["body"]
+            video["file"] = str(target)
+            for index, frame in enumerate(item.get("frames", []), 1):
+                frame_source = Path(frame["file"]).resolve()
+                frame_source = resolve_source(frame_source, tweet_id, frame_source.suffix, index)
+                frame_target = frame_source.with_name("%d.%s_%s_%d%s" % (
+                    number, title, tweet_id, index, frame_source.suffix))
+                operation = prepare_rename(frame_source, frame_target)
+                if operation:
+                    operations.append(operation)
+                frame["file"] = str(frame_target)
+            item["title"] = content["title"]
+            item["recommendation"] = content["body"]
+            item["topics"] = content["topics"]
 
     for source, target in operations:
         source.rename(target)
@@ -142,7 +185,7 @@ def finalize(out_dir, publish_file):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, help="finder 输出目录")
-    parser.add_argument("--publish-file", required=True, help="标题和推荐正文 JSON")
+    parser.add_argument("--publish-file", required=True, help="标题、正文和推荐话题 JSON")
     args = parser.parse_args()
     try:
         tables = finalize(args.out, args.publish_file)
