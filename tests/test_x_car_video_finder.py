@@ -88,3 +88,93 @@ def test_download_report_includes_filename_and_absolute_directory(tmp_path):
     assert "| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |" in report
     assert "`clip.mp4`" in report
     assert "`%s`" % (tmp_path / "videos") in report
+
+
+FINALIZE_MODULE_PATH = MODULE_PATH.with_name("finalize.py")
+FINALIZE_SPEC = importlib.util.spec_from_file_location("x_car_video_finalize", FINALIZE_MODULE_PATH)
+finalizer = importlib.util.module_from_spec(FINALIZE_SPEC)
+FINALIZE_SPEC.loader.exec_module(finalizer)
+
+
+def publish_candidate(tweet_id):
+    return {
+        "id": tweet_id, "url": "https://x.com/car/status/%s" % tweet_id,
+        "author": "car", "author_name": "Car", "date": "2026-11-08",
+        "likes": 10, "replies": 2, "reposts": 3, "views": 100,
+        "text": "Car video",
+    }
+
+
+def publish_item(tmp_path, tweet_id, directory="videos", rejected=False):
+    directory_path = tmp_path / directory
+    directory_path.mkdir(exist_ok=True)
+    video_path = directory_path / ("clip_%s.mp4" % tweet_id)
+    video_path.write_bytes(b"video")
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(exist_ok=True)
+    frame_path = frames_dir / ("%s_1.jpg" % tweet_id)
+    frame_path.write_bytes(b"frame")
+    item = {
+        "candidate": publish_candidate(tweet_id),
+        "video": {"file": str(video_path), "duration": 31, "width": 1920, "height": 1080},
+        "frames": [{"file": str(frame_path), "at_sec": 4.65}],
+    }
+    if rejected:
+        item["reason"] = "画面非汽车"
+        item["frames"] = []
+    return item
+
+
+def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
+    selected = publish_item(tmp_path, "1")
+    rejected = publish_item(tmp_path, "2", "rejected", rejected=True)
+    old_video = Path(selected["video"]["file"])
+    old_frame = Path(selected["frames"][0]["file"])
+    manifest = {"downloads": [selected], "rejected": [rejected]}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    (tmp_path / "REPORT.md").write_text("# X 汽车视频搜索报告\n")
+    publish_path = tmp_path / "publish.json"
+    publish_path.write_text(json.dumps({
+        "1": {"title": "奇怪汽车：飞行/翻滚", "body": "可直接发布的入选正文"},
+        "2": {"title": "淘汰视频标题", "body": "可直接发布的淘汰正文"},
+    }, ensure_ascii=False))
+
+    finalizer.finalize(tmp_path, publish_path)
+
+    saved = json.loads((tmp_path / "manifest.json").read_text())
+    selected = saved["downloads"][0]
+    selected_path = Path(selected["video"]["file"])
+    assert selected_path.name == "奇怪汽车：飞行-翻滚_1.mp4"
+    assert selected_path.read_bytes() == b"video"
+    assert not old_video.exists()
+    assert not old_frame.exists()
+    assert Path(selected["frames"][0]["file"]).name == "奇怪汽车：飞行-翻滚_1_1.jpg"
+    assert selected["title"] == "奇怪汽车：飞行/翻滚"
+    assert selected["recommendation"] == "可直接发布的入选正文"
+    assert saved["downloads"][0]["video"]["file"] == str(selected_path)
+    report = (tmp_path / "REPORT.md").read_text()
+    assert "`奇怪汽车：飞行-翻滚_1.mp4`" in report
+    assert "`淘汰视频标题_2.mp4`" in report
+    assert "可直接发布的入选正文" in report
+    assert "画面非汽车" in report
+
+    finalizer.finalize(tmp_path, publish_path)
+    report = (tmp_path / "REPORT.md").read_text()
+    assert report.count(finalizer.START_MARKER) == 1
+    assert report.count(finalizer.END_MARKER) == 1
+
+
+def test_finalize_rejects_missing_publish_content_before_renaming(tmp_path):
+    import pytest
+
+    selected = publish_item(tmp_path, "1")
+    original = Path(selected["video"]["file"])
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [selected], "rejected": []}))
+    publish_path = tmp_path / "publish.json"
+    publish_path.write_text("{}")
+
+    with pytest.raises(ValueError, match="缺少"):
+        finalizer.finalize(tmp_path, publish_path)
+
+    assert original.is_file()
+    assert not (tmp_path / "REPORT.md").exists()
