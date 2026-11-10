@@ -1,10 +1,13 @@
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 
-MODULE_PATH = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts/finder.py"
+SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+MODULE_PATH = SCRIPTS_DIR / "finder.py"
 SPEC = importlib.util.spec_from_file_location("x_car_video_finder", MODULE_PATH)
 finder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(finder)

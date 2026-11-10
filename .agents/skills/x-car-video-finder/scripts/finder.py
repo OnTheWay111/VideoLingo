@@ -2,7 +2,7 @@
 """x-car-video-finder: 提示词 -> X 检索式 -> 汽车视频过滤 -> 排序 -> 下载 -> 抽帧。
 
 依赖: xfetch skill（twikit 搜索）、yt-dlp、ffmpeg。
-登录态: 通过 --auth-file（KEY=VALUE）或 XFETCH_AUTH_TOKEN/XFETCH_CT0 环境变量提供。
+登录态: 通过 --web-session、--cookies-file、--auth-file 或 XFETCH_* 环境变量提供。
 """
 
 import argparse
@@ -15,6 +15,16 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from web_session import (
+    SessionError,
+    add_session_arguments,
+    load_key_value_file,
+    prepare_x_auth,
+    redact_session_values,
+    session_summary,
+    ytdlp_session_args,
+)
 
 # 汽车内容关键词：用于剔除“标题党/非汽车”的媒体推文
 CAR_LEXICON = (
@@ -131,12 +141,7 @@ def load_env(args):
         path = Path(os.path.expanduser(args.auth_file))
         if not path.is_file():
             die("auth-file 不存在: %s" % path)
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            env[key.strip()] = value.strip()
+        env.update(load_key_value_file(path))
     return env
 
 
@@ -146,7 +151,7 @@ def auth_ok(py, xfetch, env):
     except subprocess.TimeoutExpired:
         return False, "auth check 超时"
     detail = ((p.stdout or "") + (p.stderr or "")).strip()
-    return p.returncode == 0, detail
+    return p.returncode == 0, redact_session_values(detail, env)
 
 
 def q(token):
@@ -325,18 +330,21 @@ def probe_video(path):
         return {"duration": 0, "width": 0, "height": 0}
 
 
-def download_video(candidate, videos_dir, args):
-    videos_dir.mkdir(parents=True, exist_ok=True)
+def build_download_command(candidate, videos_dir, args):
     template = str(videos_dir / "%(uploader).40s_%(id)s.%(ext)s")
     height = args.max_height
-    cmd = [
-        "yt-dlp", "--no-playlist", "--no-warnings", "--no-overwrites",
+    return ["yt-dlp", "--ignore-config"] + ytdlp_session_args(args) + [
+        "--no-playlist", "--no-warnings", "--no-overwrites",
         "-f", "bv*[height<=%d]+ba/b[height<=%d]/b" % (height, height),
         "--merge-output-format", "mp4",
         "-o", template, "--write-info-json",
-        "--print", "after_move:filepath",
-        candidate["url"],
+        "--print", "after_move:filepath", "--", candidate["url"],
     ]
+
+
+def download_video(candidate, videos_dir, args):
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    cmd = build_download_command(candidate, videos_dir, args)
     log("下载 %s" % candidate["url"])
     try:
         proc = run(cmd, timeout=1800)
@@ -351,8 +359,9 @@ def download_video(candidate, videos_dir, args):
                 if not p.endswith(".info.json")]
         path = hits[0] if hits else None
     if not path or not os.path.isfile(path):
-        log("  失败(exit %d): %s" % (proc.returncode, (proc.stderr or "").strip()[:400]))
-        return None, (proc.stderr or "")[-500:]
+        detail = redact_session_values((proc.stderr or "").strip())
+        log("  失败(exit %d): %s" % (proc.returncode, detail[:400]))
+        return None, detail[-500:]
     info = probe_video(path)
     size = os.path.getsize(path)
     log("  完成 %s (%.1f MB)" % (os.path.basename(path), size / 1024 / 1024))
@@ -403,6 +412,7 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "generated_at": now,
         "sort": args.sort,
         "max_duration_seconds": args.max_duration,
+        "web_session": session_summary(args),
         "queries": queries,
         "stats": stats,
         "candidates": candidates,
@@ -509,9 +519,14 @@ def main():
     ap.add_argument("--max-duration", type=float, default=300,
                     help="视频时长上限（秒），默认 300（5 分钟），0 表示不限制")
     ap.add_argument("--frames", type=int, default=2)
+    add_session_arguments(ap)
     args = ap.parse_args()
     if args.max_duration < 0:
         die("--max-duration 不能小于 0")
+    try:
+        session_summary(args)
+    except SessionError as exc:
+        die(str(exc), code=2)
 
     out_dir = Path(args.out).resolve()
     raw_dir = out_dir / "raw"
@@ -524,14 +539,19 @@ def main():
     xfetch = resolve_xfetch(args.xfetch)
     py = resolve_python(args.python)
     env = load_env(args)
+    try:
+        env = prepare_x_auth(args, env, py, xfetch)
+    except SessionError as exc:
+        die(str(exc), code=2)
 
-    if not (env.get("XFETCH_AUTH_TOKEN") and env.get("XFETCH_CT0")):
-        log("提示: 未提供 auth-file/环境变量，尝试使用 xfetch 已保存的会话。")
+    if (not (env.get("XFETCH_AUTH_TOKEN") and env.get("XFETCH_CT0"))
+            and not env.get("XFETCH_COOKIES")):
+        log("提示: 未提供显式会话，尝试使用 xfetch 已保存的会话。")
     ok, detail = auth_ok(py, xfetch, env)
     if not ok:
-        die("X 登录态不可用。先运行:\n"
-            "  python3 .agents/skills/x-car-video-finder/scripts/auth_from_chrome.py --out /tmp/xfetch-auth.env\n"
-            "再传 --auth-file /tmp/xfetch-auth.env。\n详情: %s" % detail[:300], code=2)
+        die("X 登录态不可用。可加 `--web-session chrome` 复用浏览器登录态，"
+            "或传 `--cookies-file cookies.txt` / `--auth-file /tmp/xfetch-auth.env`。"
+            "\n详情: %s" % detail[:300], code=2)
 
     queries = args.query or build_auto_queries(args.prompt, args.min_likes, args.since)
     if args.query and args.min_likes:
