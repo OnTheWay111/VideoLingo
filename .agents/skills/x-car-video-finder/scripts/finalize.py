@@ -54,11 +54,17 @@ def load_publish(path):
             raise ValueError("推文 %s 的发布内容必须是对象" % tweet_id)
         title = str(item.get("title") or "").strip()
         body = str(item.get("body") or "").strip()
+        brand = str(item.get("brand") or "汽车").strip()
+        file_topic = str(item.get("file_topic") or title).strip()
         if not title or not body:
             raise ValueError("推文 %s 缺少 title 或 body" % tweet_id)
+        if not brand or not file_topic:
+            raise ValueError("推文 %s 的 brand 或 file_topic 不能为空" % tweet_id)
         result[str(tweet_id)] = {
             "title": title,
             "body": body,
+            "brand": brand,
+            "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
         }
     return result
@@ -151,11 +157,12 @@ def finalize(out_dir, publish_file):
             candidate = item["candidate"]
             tweet_id = str(candidate["id"])
             content = publish[tweet_id]
-            title = safe_title(content["title"])
+            brand = safe_title(content["brand"]).replace("_", "-")
+            file_topic = safe_title(content["file_topic"]).replace("_", "-")
             video = item["video"]
             source = Path(video["file"]).resolve()
             source = resolve_source(source, tweet_id, source.suffix)
-            target = source.with_name("%d.%s_%s%s" % (number, title, tweet_id, source.suffix))
+            target = source.with_name("%d.%s_%s%s" % (number, brand, file_topic, source.suffix))
             operation = prepare_rename(source, target)
             if operation:
                 operations.append(operation)
@@ -164,13 +171,15 @@ def finalize(out_dir, publish_file):
                 frame_source = Path(frame["file"]).resolve()
                 frame_source = resolve_source(frame_source, tweet_id, frame_source.suffix, index)
                 frame_target = frame_source.with_name("%d.%s_%s_%d%s" % (
-                    number, title, tweet_id, index, frame_source.suffix))
+                    number, brand, file_topic, index, frame_source.suffix))
                 operation = prepare_rename(frame_source, frame_target)
                 if operation:
                     operations.append(operation)
                 frame["file"] = str(frame_target)
             item["title"] = content["title"]
             item["recommendation"] = content["body"]
+            item["brand"] = content["brand"]
+            item["file_topic"] = content["file_topic"]
             item["topics"] = content["topics"]
 
     for source, target in operations:
