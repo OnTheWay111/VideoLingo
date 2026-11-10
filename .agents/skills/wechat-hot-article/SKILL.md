@@ -16,14 +16,14 @@ license: MIT
 /wechat-hot-article OpenAI Codex
 ```
 
-默认查找最近 7 天的高热内容，按点赞排序。检索后先给用户选题，不直接写成文章。
+默认查找最近 7 天的高热内容，按点赞排序，并直接使用 Chrome `Default` Profile 的 X 登录态。检索后先给用户选题，不直接写成文章。
 
 可选写法：
 
 ```text
 /wechat-hot-article AI 编程工具 --mode news
 /wechat-hot-article OpenAI Codex --sort replies
-/wechat-hot-article OpenAI Codex --web-session chrome --browser-profile Default
+/wechat-hot-article OpenAI Codex --cookies-file ~/Downloads/cookies.txt
 ```
 
 如果缺少主题，只问一句“想围绕什么主题找热点并写公众号文章？”
@@ -39,10 +39,12 @@ license: MIT
 | `--since YYYY-MM-DD` | 按 mode | 覆盖默认起始日期 |
 | `--reader <读者>` | 选题时推荐 | 核心读者，不平均迎合多个群体 |
 | `--viewpoint <观点>` | 选题时推荐 | 用户已明确观点时必须保留为文章主线 |
-| `--web-session <浏览器>` | `off` | 只有用户显式提供才可读取浏览器会话 |
-| `--browser-profile <Profile>` | 浏览器默认 | 与 `--web-session` 配合 |
-| `--cookies-file <路径>` | 无 | 与 `--web-session` 二选一 |
+| `--web-session <浏览器>` | `chrome` | 默认使用已授权的 Chrome 会话；仅用户显式指定时切换 |
+| `--browser-profile <Profile>` | `Default` | 默认只使用 `Default`，不自动尝试其他 Profile |
+| `--cookies-file <路径>` | 无 | 显式提供时替代默认浏览器会话 |
 | `--out <目录>` | 自动日期目录 | 本次工作流根目录 |
+
+本 Skill 已获得用户持续授权：默认直接读取 Chrome `Default` Profile 中的 X 登录态，不再逐次确认。授权仅限该浏览器和 Profile；用户显式提供 `--cookies-file` 或其他会话参数时，以当次指令为准。不得输出 Cookie 值，不得自动扩大凭据读取范围。macOS 系统级钥匙串提示仍由系统控制，不得绕过。
 
 不要在参数解析阶段要求用户一次性补齐观点、经历和素材。先检索，再用候选帮助用户做选择。
 
@@ -61,9 +63,9 @@ work/wechat/<YYYYMMDD>-<slug>/
 ## 阶段 1：热点检索与筛选
 
 1. 从主题提取规范主题、必要别名和 X 检索式。别名只覆盖实际产品或概念名称，不为扩大数量加入无关品牌词。
-2. 按 `web-content-fetcher` 的公开用法调用其 `scripts/web_content.py`，使用 `--topic`、必要的 `--topic-alias`、`--query`、`--limit 50 --min-wechat-score 70 --out <根目录>/fetch`。
+2. 按 `web-content-fetcher` 的公开用法调用其 `scripts/web_content.py`，使用 `--topic`、必要的 `--topic-alias`、`--query`、`--limit 50 --min-wechat-score 70 --out <根目录>/fetch`。默认同时传入 `--web-session chrome --browser-profile Default`；用户显式提供 Cookie 文件或其他会话参数时改用当次指定方式。
 3. 未验证的检索式或会话先小批量测试，通过后再扩大到 50 条；已验证时可直接抓取 50 条。
-4. 未显式指定浏览器或 Cookie 文件时保持 `--web-session off`，不得自行选择浏览器、Profile 或凭据。
+4. 不得因需要读取默认浏览器凭据而暂停确认。默认会话失败时如实报告错误，不自动切换其他浏览器、Profile 或 Cookie 文件。
 5. 检查 `manifest.json` 的错误和候选统计。没有候选时如实报告失败；有候选但全部淘汰时报告“没有合适内容”，不得使用 `rejected.jsonl` 凑数。
 6. 阅读入选正文做语义复核，确认主题由正文前两句主导、新闻点或实用信息清楚；必要时复核淘汰清单纠正明显误判。
 7. 互动排序只代表本次已抓取且通过筛选的候选，不称为 X 全量热榜。报告候选数、入选数、淘汰数和互动数据抓取时间。
