@@ -6,7 +6,7 @@ license: MIT
 
 # X 汽车视频搜索与下载（x-car-video-finder）
 
-把一句自然语言提示词变成「X 检索式 → 去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 标题命名 → 报告」的完整流水线。通用 X / YouTube 检索和其他平台 URL 拉取请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
+把一句自然语言提示词变成「X 检索式 → 去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 标题命名 → 报告」的完整流水线。通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
@@ -132,7 +132,7 @@ python3 .../finder.py \
 
 ## 通用内容检索与拉取
 
-非汽车主题、YouTube 关键词检索和其他平台 URL 拉取统一使用 `../web-content-fetcher/SKILL.md`。该独立 Skill 支持 X / YouTube 检索、通用 URL 元数据与媒体下载，并输出 `items.jsonl` 和 `manifest.json`；不要把本汽车 Skill 的 `--no-car-filter` 当成通用内容拉取器。
+非汽车主题的公众号候选筛选和其他平台 URL 素材核验统一使用 `../web-content-fetcher/SKILL.md`。该独立 Skill 支持 X 主题筛选、显式 URL 元数据与媒体下载，并输出 `items.jsonl`、`rejected.jsonl` 和 `manifest.json`；不要把本汽车 Skill 的 `--no-car-filter` 当成通用内容拉取器。
 
 ## X 汽车搜索输出
 
@@ -185,7 +185,7 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 
 ## Agent 工作流（重要）
 
-1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。通用 URL / YouTube 拉取改用 `web-content-fetcher`，不要伪造 X 检索式。
+1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。非汽车公众号选题或通用 URL 素材核验改用 `web-content-fetcher`，不要伪造 X 检索式。
 2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
 3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。
 4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：

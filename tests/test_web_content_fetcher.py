@@ -11,6 +11,7 @@ CAR_SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder
 sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(CAR_SCRIPTS_DIR))
 
+import editorial
 import finder
 import web_content
 import web_session
@@ -349,3 +350,114 @@ def test_collect_x_returns_auth_error_without_search(monkeypatch):
 
     assert items == []
     assert errors == [{"target": "X auth", "error": "session expired"}]
+
+
+def editorial_item(text, item_id="1"):
+    return {
+        "id": "x-" + item_id,
+        "source_id": item_id,
+        "platform": "x",
+        "url": "https://x.com/codex/status/" + item_id,
+        "text": text,
+        "title": text[:120],
+    }
+
+
+def test_topic_aliases_include_codex_umbrella():
+    aliases = editorial.topic_aliases(
+        topic="OpenAI Codex", queries=['("OpenAI Codex" OR "Codex CLI")']
+    )
+
+    assert aliases == ["OpenAI Codex", "Codex CLI", "Codex"]
+
+
+def test_editorial_rejects_missing_topic_even_with_high_engagement():
+    result = editorial.evaluate_item(
+        editorial_item("Most people prompt every AI model the same way. Reply below."),
+        ["OpenAI Codex", "Codex"],
+    )
+
+    assert result["selection"] == "rejected"
+    assert result["reject_reasons"] == ["主题缺失"]
+    assert result["wechat_score"] == 0
+
+
+def test_editorial_rejects_topic_mentioned_only_after_first_two_lines():
+    result = editorial.evaluate_item(
+        editorial_item("Grok Bot 开源神器合集\n兄弟们，这些工具都很强\n有人用它管理 Codex"),
+        ["Codex"],
+    )
+
+    assert result["selection"] == "rejected"
+    assert result["reject_reasons"] == ["非主题主导"]
+
+
+def test_editorial_keeps_technical_codex_news():
+    result = editorial.evaluate_item(
+        editorial_item(
+            "OpenAI Codex Desktop Remote SSH 多会话认证冲突\n"
+            "新客户端替换共享 SSH Socket，导致原会话 GitHub 认证超时。"
+            "报告给出了恢复路径和会话隔离建议，属于具体 bug 分析与修复实践。"
+        ),
+        ["OpenAI Codex", "Codex"],
+    )
+
+    assert result["selection"] == "selected"
+    assert result["topic_in_lead"] is True
+    assert result["wechat_score"] >= 70
+
+
+def test_editorial_rejects_shallow_and_unsubstantiated_income_posts():
+    shallow = editorial.evaluate_item(editorial_item("Codex CLI，大家怎么看？"), ["Codex"])
+    hype = editorial.evaluate_item(
+        editorial_item("OpenAI Codex 自动交易\n一个月稳赚 5 万美元，一年下来财富自由"),
+        ["Codex"],
+    )
+
+    assert shallow["selection"] == "rejected"
+    assert hype["selection"] == "rejected"
+    assert hype["wechat_score"] < 70
+    assert any("高收益" in reason for reason in hype["wechat_reasons"])
+
+
+def test_select_wechat_items_preserves_reject_audit():
+    items = [
+        editorial_item("Codex CLI now has an agent command center for managing sessions.", "1"),
+        editorial_item("Grok 合集\n兄弟们看这个\n第三行才提到 Codex", "2"),
+    ]
+
+    selected, rejected, aliases = editorial.select_wechat_items(
+        items, queries=['"Codex CLI"'], min_score=70
+    )
+
+    assert [item["source_id"] for item in selected] == ["1"]
+    assert [item["source_id"] for item in rejected] == ["2"]
+    assert aliases == ["Codex CLI", "Codex"]
+    assert rejected[0]["reject_reasons"] == ["非主题主导"]
+
+
+def test_cli_returns_success_when_candidates_exist_but_none_are_suitable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        web_content, "collect",
+        lambda args: ([editorial_item("完全无关的 AI 新闻", "1")], []),
+    )
+
+    result = web_content.main([
+        "--source", "x", "--query", '"OpenAI Codex"',
+        "--topic", "OpenAI Codex", "--out", str(tmp_path),
+    ])
+
+    assert result == 0
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["candidate_count"] == 1
+    assert manifest["item_count"] == 0
+    assert manifest["rejected_count"] == 1
+    assert (tmp_path / "items.jsonl").read_text() == ""
+    assert "主题缺失" in (tmp_path / "rejected.jsonl").read_text()
+
+
+def test_cli_no_longer_accepts_youtube_source(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        web_content.main(["--source", "youtube", "--query", "Codex", "--out", str(tmp_path)])
+
+    assert exc.value.code == 2

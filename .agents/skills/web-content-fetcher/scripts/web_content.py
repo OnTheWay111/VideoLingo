@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""使用 xfetch、yt-dlp 和显式 Web 登录会话检索、拉取各平台内容。"""
+"""筛选适合微信公众号的 X 主题内容，并支持显式 URL 素材核验。"""
 
 import argparse
 import datetime
@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from editorial import select_wechat_items
 from web_session import (
     SessionError,
     add_session_arguments,
@@ -304,10 +305,7 @@ def collect(args):
     if args.source == "x":
         items, errors = collect_x(args)
     else:
-        if args.source == "youtube":
-            targets = [("ytsearch%d:%s" % (args.limit, query), False) for query in args.query]
-        else:
-            targets = [(url, True) for url in args.url]
+        targets = [(url, True) for url in args.url]
         items, errors = [], []
         for target, direct_url in targets:
             log("拉取 %s" % target)
@@ -325,7 +323,8 @@ def collect(args):
     return sort_items(deduped, args.sort), errors
 
 
-def write_outputs(args, items, errors, downloads, out_dir):
+def write_outputs(args, items, errors, downloads, out_dir, rejected=None, aliases=None):
+    rejected = rejected or []
     manifest = {
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "source": args.source,
@@ -334,14 +333,22 @@ def write_outputs(args, items, errors, downloads, out_dir):
         "sort": args.sort,
         "x_search_type": args.type if args.source == "x" else None,
         "since": args.since,
+        "topic_aliases": aliases or [],
+        "min_wechat_score": getattr(args, "min_wechat_score", 70),
         "session": session_summary(args),
+        "candidate_count": len(items) + len(rejected),
         "item_count": len(items),
+        "rejected_count": len(rejected),
         "errors": errors,
         "items": items,
+        "rejected_items": rejected,
         "downloads": downloads,
     }
     with open(out_dir / "items.jsonl", "w") as fp:
         for item in items:
+            fp.write(json.dumps(item, ensure_ascii=False) + "\n")
+    with open(out_dir / "rejected.jsonl", "w") as fp:
+        for item in rejected:
             fp.write(json.dumps(item, ensure_ascii=False) + "\n")
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2)
@@ -351,13 +358,18 @@ def write_outputs(args, items, errors, downloads, out_dir):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("url", "youtube", "x"), default=None,
-                        help="url=直接链接；youtube/x=对应平台关键词检索")
-    parser.add_argument("--url", action="append", default=[], help="内容 URL，可重复")
-    parser.add_argument("--query", action="append", default=[], help="X 或 YouTube 检索词，可重复")
+    parser.add_argument("--source", choices=("url", "x"), default=None,
+                        help="url=显式素材链接；x=X 主题检索")
+    parser.add_argument("--url", action="append", default=[], help="素材 URL，可重复")
+    parser.add_argument("--query", action="append", default=[], help="X 检索式，可重复")
+    parser.add_argument("--topic", default="", help="公众号选题的规范主题，例如 OpenAI Codex")
+    parser.add_argument("--topic-alias", action="append", default=[],
+                        help="额外主题别名，可重复；默认也会从 query 提取")
+    parser.add_argument("--min-wechat-score", type=int, default=70,
+                        help="公众号适配最低分，0–100，默认 70")
     parser.add_argument("--limit", type=int, default=10, help="每组关键词检索返回上限（1–100）")
     parser.add_argument("--sort", choices=("none", "likes", "replies", "reposts", "views"),
-                        default="none", help="检索结果本地排序，默认保留平台顺序")
+                        default="none", help="入选内容本地排序，默认保留平台顺序")
     parser.add_argument("--type", choices=("top", "latest", "media"), default="top",
                         help="X 搜索视图，默认 top")
     parser.add_argument("--since", default=None, help="X 检索起始日期 YYYY-MM-DD")
@@ -376,11 +388,13 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.source is None:
-        args.source = "youtube" if args.query and not args.url else "url"
+        args.source = "x" if args.query and not args.url else "url"
     if args.limit < 1 or args.limit > 100 or args.max_height < 1:
         parser.error("--limit 必须在 1–100 之间，--max-height 必须大于 0")
-    if args.source in ("youtube", "x") and (not args.query or args.url):
-        parser.error("%s 检索需要 --query，且不能同时传 --url" % args.source)
+    if not 0 <= args.min_wechat_score <= 100:
+        parser.error("--min-wechat-score 必须在 0–100 之间")
+    if args.source == "x" and (not args.query or args.url):
+        parser.error("X 检索需要 --query，且不能同时传 --url")
     if args.source == "url" and (not args.url or args.query):
         parser.error("URL 拉取需要 --url，且不能同时传 --query")
     if args.source != "x" and args.since:
@@ -394,6 +408,12 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         items, errors = collect(args)
+        rejected, aliases = [], []
+        if args.source == "x":
+            items, rejected, aliases = select_wechat_items(
+                items, topic=args.topic, aliases=args.topic_alias,
+                queries=args.query, min_score=args.min_wechat_score,
+            )
         downloads = []
         if args.download:
             for item in items:
@@ -401,19 +421,19 @@ def main(argv=None):
                 downloads.append({"item_id": item["id"], "video": result, "error": error})
                 if error:
                     errors.append({"target": item["url"], "error": error})
-        write_outputs(args, items, errors, downloads, out_dir)
+        write_outputs(args, items, errors, downloads, out_dir, rejected, aliases)
     except SessionError as exc:
         parser.error(str(exc))
 
     for item in items:
-        print("| %s | %s | %s | %s |" % (
-            item["platform"], item["date"] or "-",
+        print("| %s | %s | %s | %s | %s |" % (
+            item["platform"], item.get("wechat_score", "-"), item["date"] or "-",
             item["title"].replace("|", "/")[:80], item["url"],
         ))
-    log("内容 %d 条，错误 %d 条；报告: %s" % (
-        len(items), len(errors), out_dir / "manifest.json"
+    log("入选 %d 条，淘汰 %d 条，错误 %d 条；报告: %s" % (
+        len(items), len(rejected), len(errors), out_dir / "manifest.json"
     ))
-    if not items or any(download.get("error") for download in downloads):
+    if (not items and not rejected) or any(download.get("error") for download in downloads):
         return 1
     return 0
 
