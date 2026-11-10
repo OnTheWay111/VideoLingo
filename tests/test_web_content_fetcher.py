@@ -461,3 +461,120 @@ def test_cli_no_longer_accepts_youtube_source(tmp_path):
         web_content.main(["--source", "youtube", "--query", "Codex", "--out", str(tmp_path)])
 
     assert exc.value.code == 2
+
+
+def engagement_item(item_id, date, likes=0, replies=0, reposts=0, views=0):
+    item = editorial_item(
+        "Codex CLI update adds workflow review guidance for agents.", item_id
+    )
+    item.update({
+        "date": date,
+        "likes": likes,
+        "replies": replies,
+        "reposts": reposts,
+        "views": views,
+    })
+    return item
+
+
+def test_heat_sort_combines_engagement_and_recency():
+    older = engagement_item(
+        "older", "2026-11-07", likes=1000, replies=200, reposts=100, views=100000
+    )
+    newer = engagement_item(
+        "newer", "2026-11-10", likes=10, replies=1, reposts=0, views=100
+    )
+
+    ranked = web_content.sort_items([newer, older], "heat", "2026-11-10")
+
+    assert [item["source_id"] for item in ranked] == ["older", "newer"]
+    assert ranked[0]["heat_score"] == 92.5
+    assert ranked[0]["heat_breakdown"] == {
+        "likes": 25.0,
+        "replies": 25.0,
+        "reposts": 20.0,
+        "views": 15.0,
+        "recency": 7.5,
+    }
+    assert ranked[0]["heat_age_days"] == 3
+    assert ranked[1]["heat_breakdown"]["recency"] == 15.0
+
+
+def test_heat_sort_prefers_newer_item_with_same_engagement():
+    older = engagement_item(
+        "older", "2026-11-09", likes=100, replies=20, reposts=10, views=1000
+    )
+    newer = engagement_item(
+        "newer", "2026-11-10", likes=100, replies=20, reposts=10, views=1000
+    )
+
+    ranked = web_content.sort_items([older, newer], "heat", "2026-11-10")
+
+    assert [item["source_id"] for item in ranked] == ["newer", "older"]
+    assert ranked[0]["heat_breakdown"]["recency"] == 15.0
+    assert 0 < ranked[1]["heat_breakdown"]["recency"] < 15.0
+
+
+def test_heat_sort_rewards_replies_reposts_and_views():
+    discussed = engagement_item(
+        "discussed", "2026-11-10", likes=100, replies=50, reposts=20, views=1000
+    )
+    quiet = engagement_item(
+        "quiet", "2026-11-10", likes=100, replies=0, reposts=0, views=1000
+    )
+    ranked_discussion = web_content.sort_items([quiet, discussed], "heat", "2026-11-10")
+    low_views = engagement_item("low", "2026-11-10", likes=100, views=100)
+    high_views = engagement_item("high", "2026-11-10", likes=100, views=10000)
+    ranked_views = web_content.sort_items([low_views, high_views], "heat", "2026-11-10")
+
+    assert [item["source_id"] for item in ranked_discussion] == ["discussed", "quiet"]
+    assert ranked_discussion[0]["heat_breakdown"]["replies"] == 25.0
+    assert ranked_discussion[0]["heat_breakdown"]["reposts"] == 20.0
+    assert [item["source_id"] for item in ranked_views] == ["high", "low"]
+    assert ranked_views[0]["heat_breakdown"]["views"] == 15.0
+
+
+def test_heat_sort_handles_missing_metrics_and_dates():
+    missing = engagement_item("missing", "")
+    recent = engagement_item("recent", "2026-11-10")
+
+    ranked = web_content.sort_items([missing, recent], "heat", "2026-11-10")
+
+    assert [item["source_id"] for item in ranked] == ["recent", "missing"]
+    assert ranked[0]["heat_score"] == 15.0
+    assert ranked[1]["heat_score"] == 0.0
+    assert ranked[1]["heat_age_days"] is None
+
+
+def test_cli_x_defaults_to_heat_and_writes_explainable_manifest(monkeypatch, tmp_path):
+    today = web_content.datetime.date.today()
+    older = engagement_item(
+        "older",
+        (today - web_content.datetime.timedelta(days=3)).isoformat(),
+        likes=1000,
+        replies=200,
+        reposts=100,
+        views=100000,
+    )
+    newer = engagement_item(
+        "newer", today.isoformat(), likes=10, replies=1, reposts=0, views=100
+    )
+    monkeypatch.setattr(web_content, "collect_x", lambda args: ([newer, older], []))
+
+    result = web_content.main([
+        "--source", "x", "--query", '"Codex CLI"', "--topic", "Codex CLI",
+        "--out", str(tmp_path),
+    ])
+
+    assert result == 0
+    items = [json.loads(line) for line in (tmp_path / "items.jsonl").read_text().splitlines()]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [item["source_id"] for item in items] == ["older", "newer"]
+    assert manifest["sort"] == "heat"
+    assert manifest["heat"]["weights"] == {
+        "likes": 25, "replies": 25, "reposts": 20, "views": 15, "recency": 15,
+    }
+    assert manifest["heat"]["reference_date"] == today.isoformat()
+    assert manifest["heat"]["recency_half_life_days"] == 3.0
+    assert items[0]["heat_score"] == 92.5
+    assert items[0]["heat_breakdown"]["replies"] == 25.0

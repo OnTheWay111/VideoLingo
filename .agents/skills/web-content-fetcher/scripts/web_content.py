@@ -4,6 +4,7 @@
 import argparse
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -272,9 +273,79 @@ def download_item(item, args, videos_dir):
     return {"file": str(Path(path).resolve()), "size_bytes": Path(path).stat().st_size}, None
 
 
-def sort_items(items, sort):
+HEAT_WEIGHTS = {
+    "likes": 25,
+    "replies": 25,
+    "reposts": 20,
+    "views": 15,
+    "recency": 15,
+}
+HEAT_METRICS = ("likes", "replies", "reposts", "views")
+HEAT_RECENCY_HALF_LIFE_DAYS = 3.0
+
+
+def heat_reference_date(value=None):
+    if value is None:
+        return datetime.date.today()
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(value)
+
+
+def metric_value(item, field):
+    return max(0, to_int(item.get(field)))
+
+
+def add_heat_scores(items, reference_date=None):
+    reference = heat_reference_date(reference_date)
+    maxima = {
+        field: max((metric_value(item, field) for item in items), default=0)
+        for field in HEAT_METRICS
+    }
+    scored = []
+    for item in items:
+        breakdown = {}
+        for field in HEAT_METRICS:
+            maximum = maxima[field]
+            normalized = (
+                math.log1p(metric_value(item, field)) / math.log1p(maximum)
+                if maximum else 0.0
+            )
+            breakdown[field] = HEAT_WEIGHTS[field] * normalized
+        age_days = None
+        recency = 0.0
+        try:
+            published = datetime.date.fromisoformat((item.get("date") or "")[:10])
+        except ValueError:
+            pass
+        else:
+            age_days = max(0, (reference - published).days)
+            recency = 0.5 ** (age_days / HEAT_RECENCY_HALF_LIFE_DAYS)
+        breakdown["recency"] = HEAT_WEIGHTS["recency"] * recency
+        evaluated = dict(item)
+        evaluated["heat_score"] = round(sum(breakdown.values()), 2)
+        evaluated["heat_breakdown"] = {
+            field: round(value, 4) for field, value in breakdown.items()
+        }
+        evaluated["heat_age_days"] = age_days
+        scored.append(evaluated)
+    return scored
+
+
+def sort_items(items, sort, reference_date=None):
     if sort == "none":
         return items
+    if sort == "heat":
+        scored = add_heat_scores(items, reference_date)
+        return sorted(scored, key=lambda item: (
+            -item["heat_score"],
+            -item["heat_breakdown"]["recency"],
+            -metric_value(item, "likes"),
+            -metric_value(item, "replies"),
+            -metric_value(item, "reposts"),
+            -metric_value(item, "views"),
+            item.get("source_id") or "",
+        ))
     field = {"likes": "likes", "replies": "replies", "reposts": "reposts", "views": "views"}[sort]
     return sorted(items, key=lambda item: (-(item.get(field) or 0), -(item.get("likes") or 0)))
 
@@ -320,7 +391,8 @@ def collect(args):
         if key not in seen:
             seen.add(key)
             deduped.append(item)
-    return sort_items(deduped, args.sort), errors
+    reference_date = getattr(args, "heat_reference_date", None)
+    return sort_items(deduped, args.sort, reference_date), errors
 
 
 def write_outputs(args, items, errors, downloads, out_dir, rejected=None, aliases=None):
@@ -344,6 +416,16 @@ def write_outputs(args, items, errors, downloads, out_dir, rejected=None, aliase
         "rejected_items": rejected,
         "downloads": downloads,
     }
+    if args.sort == "heat":
+        manifest["heat"] = {
+            "weights": dict(HEAT_WEIGHTS),
+            "normalization": "log1p(value) / log1p(max_candidate_value)",
+            "recency_half_life_days": HEAT_RECENCY_HALF_LIFE_DAYS,
+            "reference_date": heat_reference_date(
+                getattr(args, "heat_reference_date", None)
+            ).isoformat(),
+            "scope": "fetched_deduplicated_candidates",
+        }
     with open(out_dir / "items.jsonl", "w") as fp:
         for item in items:
             fp.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -368,8 +450,8 @@ def build_parser():
     parser.add_argument("--min-wechat-score", type=int, default=70,
                         help="公众号适配最低分，0–100，默认 70")
     parser.add_argument("--limit", type=int, default=10, help="每组关键词检索返回上限（1–100）")
-    parser.add_argument("--sort", choices=("none", "likes", "replies", "reposts", "views"),
-                        default="none", help="入选内容本地排序，默认保留平台顺序")
+    parser.add_argument("--sort", choices=("none", "heat", "likes", "replies", "reposts", "views"),
+                        default=None, help="候选内容本地排序；默认 X=heat，URL=none")
     parser.add_argument("--type", choices=("top", "latest", "media"), default="top",
                         help="X 搜索视图，默认 top")
     parser.add_argument("--since", default=None, help="X 检索起始日期 YYYY-MM-DD")
@@ -389,6 +471,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.source is None:
         args.source = "x" if args.query and not args.url else "url"
+    if args.sort is None:
+        args.sort = "heat" if args.source == "x" else "none"
+    args.heat_reference_date = (
+        datetime.date.today().isoformat() if args.sort == "heat" else None
+    )
     if args.limit < 1 or args.limit > 100 or args.max_height < 1:
         parser.error("--limit 必须在 1–100 之间，--max-height 必须大于 0")
     if not 0 <= args.min_wechat_score <= 100:
@@ -426,8 +513,9 @@ def main(argv=None):
         parser.error(str(exc))
 
     for item in items:
-        print("| %s | %s | %s | %s | %s |" % (
-            item["platform"], item.get("wechat_score", "-"), item["date"] or "-",
+        print("| %s | %s | %s | %s | %s | %s |" % (
+            item["platform"], item.get("wechat_score", "-"),
+            item.get("heat_score", "-"), item["date"] or "-",
             item["title"].replace("|", "/")[:80], item["url"],
         ))
     log("入选 %d 条，淘汰 %d 条，错误 %d 条；报告: %s" % (
