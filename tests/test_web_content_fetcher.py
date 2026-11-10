@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 
-SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/web-content-fetcher/scripts"
+CAR_SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(CAR_SCRIPTS_DIR))
 
 import finder
 import web_content
@@ -253,3 +255,97 @@ def test_cli_returns_error_when_all_sources_fail(monkeypatch, tmp_path):
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["item_count"] == 0
     assert manifest["errors"][0]["error"] == "login required"
+
+
+def test_normalize_x_tweet_uses_shared_schema():
+    tweet = {
+        "id": "123",
+        "url": "https://x.com/codex/status/123",
+        "created_at": "Mon Nov 09 01:02:03 +0000 2026",
+        "text": "OpenAI Codex latest discussion",
+        "favorite_count": 20,
+        "reply_count": 3,
+        "retweet_count": 4,
+        "view_count": "500",
+        "media": [{"type": "video", "url": "https://pbs.twimg.com/thumb.jpg"}],
+        "author": {"screen_name": "codex", "name": "Codex"},
+    }
+
+    item = web_content.normalize_x_tweet(tweet)
+
+    assert item["id"] == "x-123"
+    assert item["platform"] == "x"
+    assert item["author"] == "codex"
+    assert item["date"] == "2026-11-09"
+    assert item["likes"] == 20
+    assert item["replies"] == 3
+    assert item["reposts"] == 4
+    assert item["views"] == 500
+    assert item["thumbnail"] == "https://pbs.twimg.com/thumb.jpg"
+    assert web_content.sort_items([item], "views") == [item]
+
+
+def test_x_search_command_uses_requested_view_and_limit():
+    args = SimpleNamespace(type="latest", limit=17)
+
+    command = web_content.x_search_command("codex", args, "python", "xfetch.py")
+
+    assert command == [
+        "python", "xfetch.py", "search", "codex", "--type", "latest",
+        "-n", "17", "--format", "jsonl",
+    ]
+
+
+def test_collect_x_checks_auth_once_appends_since_dedupes_and_sorts(monkeypatch):
+    auth_calls = []
+    queries = []
+    monkeypatch.setattr(web_content, "resolve_x_python", lambda value: "python")
+    monkeypatch.setattr(web_content, "resolve_xfetch", lambda value: "xfetch.py")
+
+    def fake_auth(args, py, xfetch):
+        auth_calls.append((py, xfetch))
+        return {"SESSION": "dummy"}, None
+
+    def fake_fetch(query, args, env, py, xfetch):
+        queries.append(query)
+        tweets = [
+            {"id": "1", "text": "low", "favorite_count": 2},
+            {"id": "2", "text": "high", "favorite_count": 9},
+        ]
+        return [web_content.normalize_x_tweet(tweet) for tweet in tweets], None
+
+    monkeypatch.setattr(web_content, "x_auth_environment", fake_auth)
+    monkeypatch.setattr(web_content, "fetch_x_query", fake_fetch)
+    args = SimpleNamespace(
+        source="x", query=["codex", "codex"], url=[], python=None, xfetch=None,
+        since="2026-11-01", sort="likes", type="latest", limit=10,
+    )
+
+    items, errors = web_content.collect(args)
+
+    assert len(auth_calls) == 1
+    assert queries == ["codex since:2026-11-01"]
+    assert [item["source_id"] for item in items] == ["2", "1"]
+    assert errors == []
+
+
+def test_collect_x_returns_auth_error_without_search(monkeypatch):
+    monkeypatch.setattr(web_content, "resolve_x_python", lambda value: "python")
+    monkeypatch.setattr(web_content, "resolve_xfetch", lambda value: "xfetch.py")
+    monkeypatch.setattr(
+        web_content, "x_auth_environment", lambda *args: ({}, "session expired")
+    )
+
+    def unexpected_fetch(*args):
+        raise AssertionError("会话失败时不应发起搜索")
+
+    monkeypatch.setattr(web_content, "fetch_x_query", unexpected_fetch)
+    args = SimpleNamespace(
+        source="x", query=["codex"], python=None, xfetch=None,
+        since=None, sort="none", type="latest", limit=10,
+    )
+
+    items, errors = web_content.collect(args)
+
+    assert items == []
+    assert errors == [{"target": "X auth", "error": "session expired"}]

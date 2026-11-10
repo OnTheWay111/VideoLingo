@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""使用 yt-dlp 和显式 Web 登录会话检索、拉取各平台内容。"""
+"""使用 xfetch、yt-dlp 和显式 Web 登录会话检索、拉取各平台内容。"""
 
 import argparse
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,8 @@ from urllib.parse import urlparse
 from web_session import (
     SessionError,
     add_session_arguments,
+    load_key_value_file,
+    prepare_x_auth,
     redact_session_values,
     session_summary,
     ytdlp_session_args,
@@ -33,8 +36,8 @@ def log(message):
     print(message, file=sys.stderr)
 
 
-def run(cmd, timeout=300):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def run(cmd, timeout=300, env=None):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def detect_platform(url, extractor=""):
@@ -86,6 +89,113 @@ def normalize_entry(entry, source_url=""):
         "duration": entry.get("duration") or 0,
         "thumbnail": entry.get("thumbnail") or "",
     }
+
+
+def to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_x_tweet(tweet):
+    author = tweet.get("author") or {}
+    text = (tweet.get("text") or "").strip()
+    raw_date = tweet.get("created_at") or ""
+    date = ""
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            date = datetime.datetime.strptime(raw_date, fmt).date().isoformat()
+            break
+        except ValueError:
+            continue
+    if not date:
+        date = raw_date[:10]
+    media = tweet.get("media") or []
+    return {
+        "id": "x-%s" % tweet.get("id"),
+        "source_id": str(tweet.get("id") or ""),
+        "platform": "x",
+        "url": tweet.get("url") or "",
+        "author": author.get("screen_name") or "",
+        "author_name": author.get("name") or "",
+        "date": date,
+        "likes": to_int(tweet.get("favorite_count")),
+        "replies": to_int(tweet.get("reply_count")),
+        "reposts": to_int(tweet.get("retweet_count")),
+        "views": to_int(tweet.get("view_count")),
+        "title": text.replace("\n", " ")[:120],
+        "text": text,
+        "duration": 0,
+        "thumbnail": (media[0].get("url") or "") if media else "",
+    }
+
+
+def resolve_xfetch(explicit=None):
+    skill_root = Path(__file__).resolve().parent.parent.parent
+    candidates = [explicit, os.environ.get("WEB_CONTENT_XFETCH")]
+    candidates += [
+        skill_root / "xfetch/scripts/xfetch.py",
+        Path.cwd() / ".agents/skills/xfetch/scripts/xfetch.py",
+        Path.cwd() / ".dsh/skills/xfetch/scripts/xfetch.py",
+        Path.home() / ".agents/skills/xfetch/scripts/xfetch.py",
+        Path.home() / ".dsh/skills/xfetch/scripts/xfetch.py",
+        Path.home() / ".claude/skills/xfetch/scripts/xfetch.py",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate).resolve())
+    raise SessionError("X 检索需要 xfetch skill；请安装或用 --xfetch 指定 xfetch.py")
+
+
+def resolve_x_python(explicit=None):
+    if explicit:
+        return explicit
+    for candidate in (Path.cwd() / ".venv-xfetch/bin/python", Path.home() / ".venv-xfetch/bin/python"):
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
+def x_search_command(query, args, py, xfetch):
+    return [
+        py, xfetch, "search", query, "--type", args.type,
+        "-n", str(args.limit), "--format", "jsonl",
+    ]
+
+
+def x_auth_environment(args, py, xfetch):
+    env = os.environ.copy()
+    if args.auth_file:
+        path = Path(os.path.expanduser(args.auth_file))
+        if not path.is_file():
+            raise SessionError("auth-file 不存在: %s" % path)
+        env.update(load_key_value_file(path))
+    env = prepare_x_auth(args, env, py, xfetch)
+    try:
+        proc = run([py, xfetch, "auth", "check"], timeout=120, env=env)
+    except subprocess.TimeoutExpired:
+        return env, "X 会话校验超时"
+    except OSError as exc:
+        return env, "X 会话校验失败: %s" % type(exc).__name__
+    if proc.returncode != 0:
+        return env, error_detail(proc, env)
+    return env, None
+
+
+def fetch_x_query(query, args, env, py, xfetch):
+    try:
+        proc = run(x_search_command(query, args, py, xfetch), timeout=300, env=env)
+    except subprocess.TimeoutExpired:
+        return [], "xfetch 检索超时（300s）"
+    except OSError as exc:
+        return [], "xfetch 启动失败: %s" % type(exc).__name__
+    tweets = parse_json_lines(proc.stdout)
+    if proc.returncode != 0 and not tweets:
+        return [], error_detail(proc, env)
+    items = [normalize_x_tweet(tweet) for tweet in tweets]
+    error = error_detail(proc, env) if proc.returncode != 0 else None
+    return items, error
 
 
 def metadata_command(target, args, direct_url):
@@ -161,23 +271,58 @@ def download_item(item, args, videos_dir):
     return {"file": str(Path(path).resolve()), "size_bytes": Path(path).stat().st_size}, None
 
 
-def collect(args):
-    if args.source == "youtube":
-        targets = [("ytsearch%d:%s" % (args.limit, query), False) for query in args.query]
-    else:
-        targets = [(url, True) for url in args.url]
-    items, errors, seen = [], [], set()
-    for target, direct_url in targets:
-        log("拉取 %s" % target)
-        fetched, error = fetch_metadata(target, args, direct_url)
+def sort_items(items, sort):
+    if sort == "none":
+        return items
+    field = {"likes": "likes", "replies": "replies", "reposts": "reposts", "views": "views"}[sort]
+    return sorted(items, key=lambda item: (-(item.get(field) or 0), -(item.get("likes") or 0)))
+
+
+def collect_x(args):
+    py = resolve_x_python(args.python)
+    xfetch = resolve_xfetch(args.xfetch)
+    env, auth_error = x_auth_environment(args, py, xfetch)
+    if auth_error:
+        return [], [{"target": "X auth", "error": auth_error}]
+    items, errors = [], []
+    seen_queries = set()
+    for query in args.query:
+        if args.since and "since:" not in query:
+            query += " since:%s" % args.since
+        if query in seen_queries:
+            continue
+        seen_queries.add(query)
+        log("检索 X: %s" % query)
+        fetched, error = fetch_x_query(query, args, env, py, xfetch)
         if error:
-            errors.append({"target": target, "error": error})
-        for item in fetched:
-            key = (item["platform"], item["source_id"], item["url"])
-            if key not in seen:
-                seen.add(key)
-                items.append(item)
+            errors.append({"target": query, "error": error})
+        items.extend(fetched)
     return items, errors
+
+
+def collect(args):
+    if args.source == "x":
+        items, errors = collect_x(args)
+    else:
+        if args.source == "youtube":
+            targets = [("ytsearch%d:%s" % (args.limit, query), False) for query in args.query]
+        else:
+            targets = [(url, True) for url in args.url]
+        items, errors = [], []
+        for target, direct_url in targets:
+            log("拉取 %s" % target)
+            fetched, error = fetch_metadata(target, args, direct_url)
+            if error:
+                errors.append({"target": target, "error": error})
+            items.extend(fetched)
+    deduped = []
+    seen = set()
+    for item in items:
+        key = (item["platform"], item["source_id"], item["url"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return sort_items(deduped, args.sort), errors
 
 
 def write_outputs(args, items, errors, downloads, out_dir):
@@ -186,6 +331,9 @@ def write_outputs(args, items, errors, downloads, out_dir):
         "source": args.source,
         "queries": args.query,
         "urls": args.url,
+        "sort": args.sort,
+        "x_search_type": args.type if args.source == "x" else None,
+        "since": args.since,
         "session": session_summary(args),
         "item_count": len(items),
         "errors": errors,
@@ -203,11 +351,19 @@ def write_outputs(args, items, errors, downloads, out_dir):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("url", "youtube"), default=None,
-                        help="url=直接拉取链接；youtube=关键词搜索，默认按输入自动判断")
+    parser.add_argument("--source", choices=("url", "youtube", "x"), default=None,
+                        help="url=直接链接；youtube/x=对应平台关键词检索")
     parser.add_argument("--url", action="append", default=[], help="内容 URL，可重复")
-    parser.add_argument("--query", action="append", default=[], help="YouTube 检索词，可重复")
-    parser.add_argument("--limit", type=int, default=10, help="每组 YouTube 检索返回上限")
+    parser.add_argument("--query", action="append", default=[], help="X 或 YouTube 检索词，可重复")
+    parser.add_argument("--limit", type=int, default=10, help="每组关键词检索返回上限（1–100）")
+    parser.add_argument("--sort", choices=("none", "likes", "replies", "reposts", "views"),
+                        default="none", help="检索结果本地排序，默认保留平台顺序")
+    parser.add_argument("--type", choices=("top", "latest", "media"), default="top",
+                        help="X 搜索视图，默认 top")
+    parser.add_argument("--since", default=None, help="X 检索起始日期 YYYY-MM-DD")
+    parser.add_argument("--auth-file", default=None, help="X 专用 KEY=VALUE 登录态文件")
+    parser.add_argument("--xfetch", default=None, help="X 检索使用的 xfetch.py 路径")
+    parser.add_argument("--python", default=None, help="运行 xfetch 的 Python 解释器")
     parser.add_argument("--download", action="store_true", help="同时下载媒体；默认只拉取元数据")
     parser.add_argument("--max-height", type=int, default=1080,
                         help="优先限制视频高度；无匹配流时回退最佳可用画质")
@@ -223,10 +379,12 @@ def main(argv=None):
         args.source = "youtube" if args.query and not args.url else "url"
     if args.limit < 1 or args.limit > 100 or args.max_height < 1:
         parser.error("--limit 必须在 1–100 之间，--max-height 必须大于 0")
-    if args.source == "youtube" and (not args.query or args.url):
-        parser.error("YouTube 检索需要 --query，且不能同时传 --url")
+    if args.source in ("youtube", "x") and (not args.query or args.url):
+        parser.error("%s 检索需要 --query，且不能同时传 --url" % args.source)
     if args.source == "url" and (not args.url or args.query):
         parser.error("URL 拉取需要 --url，且不能同时传 --query")
+    if args.source != "x" and args.since:
+        parser.error("--since 仅用于 X 关键词检索")
     try:
         session_summary(args)
     except SessionError as exc:

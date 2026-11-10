@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """x-car-video-finder: 提示词 -> X 检索式 -> 汽车视频过滤 -> 排序 -> 下载 -> 抽帧。
 
-依赖: xfetch skill（twikit 搜索）、yt-dlp、ffmpeg。
+依赖: xfetch skill（twikit 搜索）、web-content-fetcher（Web 会话）、yt-dlp、ffmpeg。
 登录态: 通过 --web-session、--cookies-file、--auth-file 或 XFETCH_* 环境变量提供。
 """
 
@@ -15,6 +15,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+SHARED_SCRIPTS = Path(__file__).resolve().parent.parent.parent / "web-content-fetcher/scripts"
+if not SHARED_SCRIPTS.is_dir():
+    raise RuntimeError("缺少 web-content-fetcher skill，请将其与 x-car-video-finder 放在同一 skills 根下")
+sys.path.insert(0, str(SHARED_SCRIPTS))
 
 from web_session import (
     SessionError,

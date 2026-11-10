@@ -1,22 +1,23 @@
 ---
 name: x-car-video-finder
-description: 按一句提示词搜索 X/Twitter 汽车视频并排序下载，也可复用浏览器 Web 登录会话检索 YouTube、拉取 yt-dlp 支持平台的 URL 元数据和媒体。Use when the user wants to search X or YouTube for videos, fetch social-platform content through an explicit browser session, rank results, or batch-download media.
+description: 按一句提示词在 X/Twitter 上搜索汽车视频，支持按点赞量、评论数、转发数、播放量排序后取 Top N，用 yt-dlp 下载并抽帧核验。Use when the user wants to search X for car/auto videos by description, rank results by likes or comments, or batch-download X/Twitter car videos.
 license: MIT
 ---
 
-# X 汽车视频搜索与跨平台内容拉取（x-car-video-finder）
+# X 汽车视频搜索与下载（x-car-video-finder）
 
-把一句自然语言提示词变成「X 检索式 → 去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 标题命名 → 报告」的完整流水线；另提供通用 `web_content.py`，复用同一套 Web 登录会话拉取其他平台内容。
+把一句自然语言提示词变成「X 检索式 → 去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 标题命名 → 报告」的完整流水线。通用 X / YouTube 检索和其他平台 URL 拉取请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
 | 搜索 X（带登录态） | `xfetch` skill（`../xfetch/scripts/xfetch.py`，twikit） | 输出 JSONL，含 `favorite_count` / `reply_count` / `retweet_count` / `view_count` / `media` |
-| YouTube 检索、跨平台 URL 拉取 | `web_content.py` + `yt-dlp` | 统一输出平台、作者、日期、互动数、标题和正文等归一化元数据 |
-| 下载媒体 | `yt-dlp` | 显式复用浏览器 Cookie 或 cookies.txt，自动合并视频和音频 |
-| 抽帧核验 | `ffmpeg` | X 汽车视频每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
+| 统一 Web 会话 | `web-content-fetcher/scripts/web_session.py` | 显式复用浏览器 Cookie 或 cookies.txt，临时 X 凭据自动清理 |
+| 下载媒体 | `yt-dlp` | X 视频自动合并成 mp4 |
+| 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
 
 ## 前置条件
 
+- **web-content-fetcher skill**：本仓库内 `.agents/skills/web-content-fetcher/`，提供共享会话与浏览器提取脚本。
 - **xfetch skill**：本仓库内 `.agents/skills/xfetch/`（不存在则 `npx skills add agents365-ai/365-skills@xfetch`）。
 - **Python venv**：`.venv-xfetch/`（含 twikit / httpx / browser_cookie3）。
   ```bash
@@ -24,7 +25,7 @@ license: MIT
   .venv-xfetch/bin/pip install -r .agents/skills/xfetch/scripts/requirements.txt
   ```
 - **yt-dlp + ffmpeg**：`which yt-dlp ffmpeg`，macOS 可用 `brew install yt-dlp ffmpeg`。
-- **Web 登录态**：X 搜索必须登录；其他平台公开内容可匿名尝试，遇到登录/反爬校验时显式复用浏览器会话或 cookies.txt（见下）。
+- **X 登录态**：X 搜索必须登录，可显式复用浏览器会话、cookies.txt 或既有 xfetch 会话（见下）。
 
 ## 在 DeepSeek Harness 中被发现与 / 调用
 
@@ -43,29 +44,29 @@ DSH 的本地 skill 提供方只扫描下列根（rank 越高优先级越低）�
 - 本 skill 当前在 `<项目根>/.agents/skills/x-car-video-finder`，DSH 会话目录会自动收录（本项目内已验证热更新）。
 - Web 编辑器输入 `/` 会列出用户可调用的 skill，直接键入 `/x-car-video-finder 找几条 Cybertruck 越野视频` 即可调用；宿主会把完整指令注入本轮，无需模型再调 `skill` 工具。TUI / ACP 行为一致。
 - 只想允许 `/` 调用、不让模型自动选：frontmatter 加 `disable-model-invocation: true`；想隐藏 `/` 入口：`user-invocable: false`。
-- 全局安装（所有项目）：把本目录和 `xfetch` 复制到 `~/.agents/skills/` 或 `~/.dsh/skills/`。
+- 全局安装（所有项目）：把本目录、`web-content-fetcher` 和 `xfetch` 一起复制到 `~/.agents/skills/` 或 `~/.dsh/skills/`。
 - 手改文件后模型目录会自动刷新；若 `/` 菜单没更新，刷新页面、新建会话或重连即可。
 
 ## Web 登录会话（推荐）
 
-参考 `last30days` 的显式授权与凭据隔离方式，`finder.py` 和 `web_content.py` 共用 `web_session.py`。**默认 `--web-session off`，不会暗中读取浏览器 Cookie**；只有用户明确选择浏览器或 Cookie 文件时才访问登录态。
+`finder.py` 复用 `web-content-fetcher/scripts/web_session.py`。**默认 `--web-session off`，不会暗中读取浏览器 Cookie**；只有用户明确选择浏览器或 Cookie 文件时才访问登录态。
 
 - **复用浏览器**：`--web-session chrome --browser-profile Default`。浏览器可为 `chrome` / `chromium` / `edge` / `brave` / `firefox` / `safari` / `opera` / `vivaldi` / `whale`，具体可用性取决于本机浏览器和 yt-dlp。
 - **使用导出的 Cookie**：`--cookies-file ~/Downloads/cookies.txt`，要求 Netscape cookies.txt 格式，与 `--web-session` 二选一。
 - **X 的既有方式仍可用**：`--auth-file /tmp/xfetch-auth.env` 或 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`。`--auth-file` 只用于 X，不会传给其他平台。
-- **X 凭据优先级**：显式 `--auth-file` > `--cookies-file` > `--web-session` > 环境变量或 xfetch 已保存会话。macOS 上 Chrome / Edge / Brave / Chromium 先复用 `auth_from_chrome.py`，钥匙串等原生提取失败时自动回退到 `auth_from_chrome_cdp.py`；CDP 回退需要可选依赖 `websocket-client`（`.venv-xfetch/bin/pip install websocket-client`）。其他浏览器通过 xfetch 提取。非 Chromium 的 X 提取暂不支持指定 Profile，需改用 cookies.txt。
+- **X 凭据优先级**：显式 `--auth-file` > `--cookies-file` > `--web-session` > 环境变量或 xfetch 已保存会话。macOS 上 Chrome / Edge / Brave / Chromium 先原生提取，失败后自动回退 CDP；CDP 需要可选依赖 `websocket-client`（`.venv-xfetch/bin/pip install websocket-client`）。其他浏览器通过 xfetch 提取。非 Chromium 的 X 提取暂不支持指定 Profile，需改用 cookies.txt。
 - **其他平台**：由 yt-dlp 的 `--cookies-from-browser` / `--cookies` 读取对应站点会话，不使用 `X_BEARER_TOKEN`、`XQUIK_API_KEY`、`XAI_API_KEY` 或 ScrapeCreators。
 
 `finder.py` 会先通过 `xfetch auth check` 实际请求 X 验证会话，再开始搜索；临时导入的 X 凭据在进程结束时清理。报告只记录会话方式、浏览器和 Profile，不记录 Cookie 值。macOS 可能出现钥匙串授权弹窗，这是浏览器 Cookie 解密所需；用户不应在未明确授权时替其选择浏览器。
 
-旧版手动提取仍可用：
+手动提取仍可用：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/auth_from_chrome.py --out /tmp/xfetch-auth.env
+python3 .agents/skills/web-content-fetcher/scripts/auth_from_chrome.py --out /tmp/xfetch-auth.env
 python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth check
 ```
 
-钥匙串取不到时可继续使用 `auth_from_chrome_cdp.py`，或手动设置 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`；这些凭据都不能打印、提交或写入报告。
+钥匙串取不到时可继续使用 `web-content-fetcher/scripts/auth_from_chrome_cdp.py`，或手动设置 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`；这些凭据都不能打印、提交或写入报告。
 
 ## 用法
 
@@ -129,36 +130,9 @@ python3 .../finder.py \
 | `--max-duration` | `300` | 视频时长上限（秒），超过则自动淘汰；`0` 表示不限制 |
 | `--frames` | `2` | 每条视频抽帧数（0 = 不抽） |
 
-## 跨平台内容拉取（web_content.py）
+## 通用内容检索与拉取
 
-能力边界必须明确，不能把 URL 拉取说成全站搜索：
-
-| 平台 / 场景 | 关键词检索 | 登录态 URL 元数据与媒体拉取 |
-|---|---|---|
-| X / Twitter | 用 `finder.py` + xfetch | 支持，经 yt-dlp |
-| YouTube | 支持，`ytsearch` | 支持 |
-| TikTok / Instagram / Facebook / Bilibili / Reddit / Twitch / Vimeo | 本 Skill 未内置 | 取决于 yt-dlp 对应提取器和账号可见权限 |
-| 其他 yt-dlp 支持的网站 | 本 Skill 未内置 | 以 `--url` 显式拉取，失败会写入 errors |
-
-YouTube 关键词检索，只拉元数据：
-
-```bash
-python3 .agents/skills/x-car-video-finder/scripts/web_content.py \
-  --source youtube --query "OpenAI Codex" --limit 10 \
-  --web-session chrome --browser-profile Default \
-  --out work/web-content-codex
-```
-
-多个平台 URL 批量拉取并下载媒体：
-
-```bash
-python3 .agents/skills/x-car-video-finder/scripts/web_content.py \
-  --url "https://www.tiktok.com/@example/video/123" \
-  --url "https://www.bilibili.com/video/BV..." \
-  --web-session chrome --download --out work/web-content-mixed
-```
-
-通用拉取输出 `items.jsonl`（每条归一化内容）、`manifest.json`（会话摘要、错误和下载结果），下载时另有 `videos/`。它不提供 X 汽车流程的点赞排序、汽车过滤、抽帧或发布定稿；这些仍使用 `finder.py` / `finalize.py`。未加 `--download` 时只拉元数据。
+非汽车主题、YouTube 关键词检索和其他平台 URL 拉取统一使用 `../web-content-fetcher/SKILL.md`。该独立 Skill 支持 X / YouTube 检索、通用 URL 元数据与媒体下载，并输出 `items.jsonl` 和 `manifest.json`；不要把本汽车 Skill 的 `--no-car-filter` 当成通用内容拉取器。
 
 ## X 汽车搜索输出
 
@@ -211,8 +185,8 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 
 ## Agent 工作流（重要）
 
-1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。通用 URL / YouTube 拉取改用 `web_content.py`，不要伪造 X 检索式。
-2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择会话；X 由 finder 自动执行 `xfetch auth check` 验证，其他平台通过一次真实元数据拉取验证。默认不要读取浏览器。
+1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。通用 URL / YouTube 拉取改用 `web-content-fetcher`，不要伪造 X 检索式。
+2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
 3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。
 4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：
    - **时长**：默认上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。
