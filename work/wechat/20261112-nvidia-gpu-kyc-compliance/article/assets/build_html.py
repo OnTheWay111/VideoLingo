@@ -59,9 +59,12 @@ def render(markdown):
             continue
         if re.match(r"^\d+\. ", line):
             items = []
+            item_number = 1
             while index < len(lines) and re.match(r"^\d+\. ", lines[index].strip()):
                 item = re.sub(r"^\d+\. ", "", lines[index].strip())
-                items.append(f'<li style="margin:0 0 12px 0;padding:0 0 0 2px;">{inline(item)}</li>')
+                marker = f'{item_number:02d}｜'
+                items.append(f'<li style="margin:0 0 12px 0;padding:0 0 0 2px;"><span style="color:#173F35;font-weight:700;">{marker}</span>{inline(item)}</li>')
+                item_number += 1
                 index += 1
             blocks.append(
                 '<ol style="margin:0 0 20px 0;padding:0 0 0 24px;color:#24292F;font-size:16px;line-height:1.85;">'
@@ -73,7 +76,7 @@ def render(markdown):
             items = []
             while index < len(lines) and lines[index].strip().startswith("- "):
                 items.append(
-                    f'<li style="margin:0 0 10px 0;padding:0 0 0 2px;overflow-wrap:anywhere;word-break:break-word;">{inline(lines[index].strip()[2:])}</li>'
+                    f'<li style="margin:0 0 10px 0;padding:0 0 0 2px;overflow-wrap:anywhere;word-break:break-word;"><span style="color:#173F35;">• </span>{inline(lines[index].strip()[2:])}</li>'
                 )
                 index += 1
             blocks.append(
