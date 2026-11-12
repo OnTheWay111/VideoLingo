@@ -31,6 +31,7 @@ from web_session import (
     ytdlp_session_args,
 )
 from publish_history import PublishedHistory, default_history_path
+from topic_planner import build_topic_plan
 from topic_policy import partition_forbidden_topics
 
 # 汽车内容关键词：用于剔除“标题党/非汽车”的媒体推文
@@ -425,7 +426,7 @@ def reject_overlong_video(video, rejected_dir, max_duration):
 
 
 def write_outputs(args, prompt, queries, candidates, downloads, rejected, dropped, stats, out_dir,
-                  publish_skipped=None, topic_skipped=None):
+                  publish_skipped=None, topic_skipped=None, topic_plan=None):
     publish_skipped = publish_skipped or []
     topic_skipped = topic_skipped or []
     history_path = str(default_history_path() if not getattr(args, "publish_history", None)
@@ -438,6 +439,7 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "max_duration_seconds": args.max_duration,
         "publish_history_file": history_path,
         "web_session": session_summary(args),
+        "topic_plan": topic_plan,
         "queries": queries,
         "stats": stats,
         "candidates": candidates,
@@ -451,6 +453,9 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         ],
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    if topic_plan:
+        (out_dir / "topic_plan.json").write_text(
+            json.dumps(topic_plan, ensure_ascii=False, indent=2) + "\n")
 
     with open(out_dir / "candidates.csv", "w", newline="") as fp:
         fields = ["id", "url", "author", "author_name", "date", "likes", "replies",
@@ -469,8 +474,18 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
              "- 视频时长：%s" % duration_rule,
              "- 发布历史：`%s`；下载前跳过 %d 条" % (history_path, len(publish_skipped)),
              "- 检索式：%d 组，候选视频推文 %d 条，非汽车剔除 %d 条，入选 %d 条，淘汰 %d 条" % (
-                 len(queries), len(candidates), len(dropped), len(downloads), len(rejected)),
-             "", "## 检索式", ""]
+                 len(queries), len(candidates), len(dropped), len(downloads), len(rejected))]
+    if topic_plan:
+        lines += ["", "## 自动选题", "",
+                  "- 栏目：%s（20 条轮动的第 %d 位）" % (
+                      topic_plan["pillar_label"], topic_plan["schedule_slot"]),
+                  "- 系列：%s，第 %d/%d 期" % (
+                      topic_plan["series_label"], topic_plan["series_episode"],
+                      topic_plan["series_batch_size"]),
+                  "- 推荐成片时长：%s 秒；最终入选阈值：%d 分" % (
+                      topic_plan["target_duration_seconds"], topic_plan["score_threshold"]),
+                  "- 点赞排序仅用于候选预筛，不能替代选题评分和抽帧核验。"]
+    lines += ["", "## 检索式", ""]
     for query in queries:
         lines.append("- `%s`" % query)
     lines += ["", "## 按点赞量 Top 10", "",
@@ -543,8 +558,10 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
 
 
 def main():
-    ap = argparse.ArgumentParser(description="按提示词搜 X 汽车视频，排序后下载")
-    ap.add_argument("--prompt", required=True, help="原始提示词（中文/英文均可）")
+    ap = argparse.ArgumentParser(description="按提示词或自动选题搜 X 汽车视频，排序后下载")
+    ap.add_argument("--prompt", help="原始提示词（中文/英文均可）；手动模式必填")
+    ap.add_argument("--auto-topic", action="store_true",
+                    help="按小红书内容策略和发布历史自动选择栏目、系列及检索式")
     ap.add_argument("--query", action="append", default=[], help="X 检索式，可重复")
     ap.add_argument("--sort", choices=sorted(SORT_FIELDS), default="likes")
     ap.add_argument("--top", type=int, default=3, help="下载前 N 条")
@@ -573,6 +590,18 @@ def main():
     args = ap.parse_args()
     if args.max_duration < 0:
         die("--max-duration 不能小于 0")
+    if args.auto_topic and (args.prompt or args.query):
+        die("--auto-topic 不能与 --prompt 或 --query 同用；手动指定内容时请去掉 --auto-topic")
+    if not args.auto_topic and not args.prompt:
+        die("请提供 --prompt，或使用 --auto-topic 按策略自动选题")
+
+    history = PublishedHistory(args.publish_history)
+    topic_plan = build_topic_plan(history.records()) if args.auto_topic else None
+    if topic_plan:
+        args.prompt = topic_plan["prompt"]
+        args.xiaohongshu = True
+        log("自动选题：%s / %s / 第 %d 期" % (
+            topic_plan["pillar_label"], topic_plan["series_label"], topic_plan["series_episode"]))
     try:
         session_summary(args)
     except SessionError as exc:
@@ -603,10 +632,11 @@ def main():
             "或传 `--cookies-file cookies.txt` / `--auth-file /tmp/xfetch-auth.env`。"
             "\n详情: %s" % detail[:300], code=2)
 
-    queries = args.query or build_auto_queries(args.prompt, args.min_likes, args.since)
-    if args.query and args.min_likes:
+    queries = args.query or (topic_plan["queries"] if topic_plan else
+                             build_auto_queries(args.prompt, args.min_likes, args.since))
+    if args.min_likes:
         queries = [q_ if "min_faves:" in q_ else "%s min_faves:%d" % (q_, args.min_likes) for q_ in queries]
-    if args.query and args.since:
+    if args.since:
         queries = [q_ if "since:" in q_ else "%s since:%s" % (q_, args.since) for q_ in queries]
 
     car_re = re.compile(CAR_LEXICON)
@@ -627,7 +657,6 @@ def main():
         die("没有找到符合条件的视频推文。试试放宽 --min-likes/--since，或调整检索式。")
 
     ranked = sort_candidates(candidates, args.sort)
-    history = PublishedHistory(args.publish_history)
     ranked, publish_skipped = partition_published_candidates(ranked, history)
     topic_skipped = []
     if args.xiaohongshu:
@@ -674,7 +703,7 @@ def main():
     stats["already_published_skipped"] = len(publish_skipped)
     stats["rejected_over_duration"] = len(rejected)
     write_outputs(args, args.prompt, queries, ranked, downloads, rejected, dropped, stats, out_dir,
-                  publish_skipped, topic_skipped)
+                  publish_skipped, topic_skipped, topic_plan=topic_plan)
 
     print("完成：%d 条候选，%d 条已发布跳过，%d 条禁选跳过，%d 条入选，%d 条超时淘汰。" % (
         len(candidates), len(publish_skipped), len(topic_skipped), len(downloads), len(rejected)))

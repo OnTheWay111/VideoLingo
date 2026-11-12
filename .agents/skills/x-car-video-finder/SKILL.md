@@ -1,12 +1,12 @@
 ---
 name: x-car-video-finder
-description: 按一句提示词搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书选题、发布历史下载前去重，以及通过内置浏览器上传并发布视频。Use when the user wants to find X car videos, maintain a Xiaohongshu car account, skip already-published videos, or publish car videos to Xiaohongshu.
+description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、发布历史下载前去重，以及通过内置浏览器上传并发布视频。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
 # X 汽车视频搜索与下载（x-car-video-finder）
 
-把一句自然语言提示词变成「X 检索式 → 发布历史去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 小红书发布 → 已发布登记」的完整流水线。通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
+把一句自然语言提示词或内置账号策略变成「自动选题计划 → X 检索式 → 发布历史去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 小红书发布 → 已发布登记」的完整流水线。用户没有给选题时直接使用 `--auto-topic`，不要先追问主题；通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
@@ -75,7 +75,22 @@ python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth che
 
 **默认时长规则：视频时长不得超过 5 分钟（300 秒）。** 正好 300 秒可以入选；超过 300 秒的视频会自动移入 `rejected/`，并写入 `REPORT.md` 和 `manifest.json` 的淘汰清单。可用 `--max-duration 秒数` 调整上限，显式传 `--max-duration 0` 可关闭限制。
 
-最少一行（自动把提示词展开成多组检索式）：
+自动选题（无需人工输入主题）：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/finder.py \
+  --auto-topic --sort likes --top 3 --out work/xfetch-run
+```
+
+`--auto-topic` 按发布历史执行 60% 稀有车型、25% 改装机械、15% 视觉实验的 20 条轮动，同一系列连续规划 5 期，并自动生成带禁选排除词的检索式。它隐含 `--xiaohongshu`，不能与 `--prompt` 或 `--query` 同用。重复运行在实际发布登记前会保持同一计划，避免预演消耗期数。
+
+只查看下一期计划、不访问 X：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/topic_planner.py
+```
+
+手动提示词仍然可用（自动展开多组检索式）：
 
 ```bash
 python3 .agents/skills/x-car-video-finder/scripts/finder.py \
@@ -94,7 +109,7 @@ python3 .../finder.py \
   --sort replies --top 3 --since 2026-09-01 --limit 25
 ```
 
-**排序（本次需求的核心）**：X 服务端只有 Top/Latest/Media 三种视图，没有 sort 参数；本脚本先拉一批，再本地精确排序：
+**排序**：X 服务端只有 Top/Latest/Media 三种视图，没有 sort 参数；本脚本先拉一批，再本地精确排序：
 
 | `--sort` | 字段 | 说明 |
 |---|---|---|
@@ -103,14 +118,15 @@ python3 .../finder.py \
 | `reposts` | `retweet_count` | 按转发数降序 |
 | `views` | `view_count` | 按播放量降序 |
 
-服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排，最终名次以上表字段本地排序为准。
+服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。自动模式下互动排序只是候选预筛，Agent 仍须按 100 分模型评分，只让核验后达到 70 分的素材进入最终入选。
 
 ## 选项
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `--prompt` | 必填 | 原始提示词，写进报告和 manifest |
-| `--query` | 自动生成 | X 检索式，可重复；不给则按提示词自动生成 4 组汽车检索式 |
+| `--prompt` | 手动模式必填 | 原始提示词，写进报告和 manifest；与 `--auto-topic` 二选一 |
+| `--auto-topic` | 关 | 按策略和历史自动选题，隐含 `--xiaohongshu`；不与 `--prompt` / `--query` 同用 |
+| `--query` | 自动生成 | X 检索式，可重复；手动模式不给则按提示词生成，自动模式使用选题计划 |
 | `--sort` | `likes` | `likes` / `replies` / `reposts` / `views` |
 | `--top` | `3` | 下载前 N 条（按 `--sort` 排名） |
 | `--candidates` | `15` | stdout 表格展示前 N 条候选 |
@@ -148,7 +164,8 @@ work/xfetch-run/
 ├── rejected/            # 定稿后的淘汰 mp4（独立编号，超过时长上限/画面不符），备查
 ├── frames/              # 定稿后的抽帧 jpg（<编号>.<品牌名>_<主题名>_帧序号.jpg）
 ├── publish.json         # Agent 写入的标题、正文、品牌、文件主题和推荐话题
-├── manifest.json        # 候选、发布跳过、标题正文、下载、抽帧和淘汰原因
+├── topic_plan.json      # 自动模式：栏目、系列期数、检索式、评分维度和近期避开项
+├── manifest.json        # 选题计划、候选、发布跳过、标题正文、下载、抽帧和淘汰原因
 ├── candidates.csv       # 未发布候选（含点赞/评论/播放），可直接排序
 ├── xiaohongshu_publish_plan.json     # 可选：小红书浏览器发布计划
 ├── xiaohongshu_publish_receipt.json  # 可选：实际发布登记回执
@@ -204,9 +221,11 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 
 完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号承诺为“每天认识一台国内少见的车”，以关注转化而非单条点赞为目标：60% 稀有车型连续图鉴、25% 改装与机械反差、15% 视觉实验选题。按系列化潜力、前 3 秒画面、稀缺性、收藏分享、讨论空间和原帖互动评分；标题 1–20 字，正文说明车型和核心看点，话题 2–6 个。
 
-**硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、山路/公路驾驶、驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`，禁选候选在下载前写入 `topic_skipped`；发布器会再次检查原帖文字和发布文案。
+**自动选题不是自动放行素材**：`topic_planner.py` 只负责栏目、系列、期数和检索式。Agent 必须结合原帖文字、车型信息和抽帧按 100 分模型评分，核验后低于 70 分、不符合当前系列或与近期车型重复的候选不得进入最终入选；不足时递补候选，不能降低禁选标准。`topic_plan.json` 中的 `recent_titles` 和 `recent_brands` 用于辅助避免重复，不能代替车型核验。
 
-**固定历史文件**：`.agents/skills/x-car-video-finder/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。
+**硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、山路/公路驾驶、驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`（`--auto-topic` 已隐含），禁选候选在下载前写入 `topic_skipped`；发布器会再次检查原帖文字和发布文案。
+
+**固定历史文件**：`.agents/skills/x-car-video-finder/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。自动模式的实际发布登记会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、品牌和文件主题，供下一次轮动；预演和搜索不消耗期数。
 
 定稿后生成默认预演计划：
 
@@ -221,16 +240,17 @@ Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小�
 
 ## Agent 工作流（重要）
 
-1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。面向小红书时先按上述手册确定系列和关注价值，不要只追求高点赞。
+1. 用户没有给主题时直接使用 `--auto-topic`，不要追问选题；用户给了主题才从 `--prompt` 提取车型/场景并补充同义检索式。自动模式读取 `topic_plan.json`，手动模式才使用提示词展开规则。
 2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择 X 会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
-3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。面向小红书必须加 `--xiaohongshu`，禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
-4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：
-   - **时长**：默认上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。
+3. 运行 finder（先 `--dry-run` 看榜单，由 Agent 检查内容是否对路再真下，无需让人工补选题）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。手动面向小红书必须加 `--xiaohongshu`，自动模式已隐含；禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
+4. 对下载的每条视频做三项核验，并记录每条的结果与淘汰原因：
+   - **选题**：按 100 分模型逐项评分，自动模式只最终入选达到 70 分、符合当前系列且不与近期车型重复的视频；互动量不得替代其他评分项。
+   - **时长**：默认素材上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。自动计划的 15–45/20–60 秒是推荐成片时长，不是放宽素材上限的理由。
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。
 5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
-6. 用户要求发布小红书时，按手册生成计划并用内置浏览器执行。默认只预演；实际点击发布需要用户明确指令和 `confirm_publish=true`，成功或结果不明后才能登记历史。
-7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
+6. 用户要求发布小红书时，按手册生成计划并用内置浏览器执行。默认只预演；实际点击发布需要用户明确指令和 `confirm_publish=true`，成功或结果不明后才能登记历史。自动选题不等于授权实际发布。
+7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
 

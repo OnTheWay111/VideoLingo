@@ -12,6 +12,8 @@ SPEC = importlib.util.spec_from_file_location("x_car_video_finder", MODULE_PATH)
 finder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(finder)
 
+import topic_planner
+
 
 def make_video(tmp_path, duration):
     path = tmp_path / "videos" / "clip.mp4"
@@ -245,3 +247,98 @@ def test_finalize_rejects_missing_publish_content_before_renaming(tmp_path):
 
     assert original.is_file()
     assert not (tmp_path / "REPORT.md").exists()
+
+
+def test_auto_topic_plan_enforces_content_mix_and_five_episode_series():
+    from collections import Counter
+
+    records = []
+    plans = []
+    for index in range(20):
+        plan = topic_planner.build_topic_plan(records)
+        plans.append(plan)
+        records.append({
+            "source_id": str(index),
+            "status": "published",
+            "topic_pillar": plan["pillar"],
+            "topic_series_id": plan["series_id"],
+            "topic_series_episode": plan["series_episode"],
+        })
+
+    assert Counter(plan["pillar"] for plan in plans) == {
+        "rare_models": 12,
+        "mechanical_contrast": 5,
+        "visual_experiment": 3,
+    }
+    rare = [plan for plan in plans if plan["pillar"] == "rare_models"]
+    assert [plan["series_episode"] for plan in rare[:5]] == [1, 2, 3, 4, 5]
+    assert len({plan["series_id"] for plan in rare[:5]}) == 1
+    assert len({plan["series_id"] for plan in rare[5:10]}) == 1
+    assert rare[0]["series_id"] != rare[5]["series_id"]
+    assert all(plan["score_threshold"] == 70 for plan in plans)
+    assert all('-"car meet"' in query and "-Tesla" in query
+               for plan in plans for query in plan["queries"])
+
+
+def test_auto_topic_plan_is_stable_until_publication_is_recorded():
+    initial = topic_planner.build_topic_plan([])
+
+    assert topic_planner.build_topic_plan([]) == initial
+    next_plan = topic_planner.build_topic_plan([{
+        "status": "unconfirmed",
+        "topic_pillar": initial["pillar"],
+        "topic_series_id": initial["series_id"],
+        "topic_series_episode": initial["series_episode"],
+    }])
+
+    assert next_plan["schedule_slot"] == 2
+    assert next_plan["series_episode"] == 2
+
+
+def test_auto_topic_main_runs_without_prompt_and_saves_plan(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    history_path = tmp_path / "published.jsonl"
+    monkeypatch.setattr(sys, "argv", [
+        "finder.py", "--auto-topic", "--dry-run", "--out", str(out),
+        "--publish-history", str(history_path), "--min-likes", "5",
+        "--since", "2026-11-01",
+    ])
+    monkeypatch.setattr(finder, "session_summary", lambda args: {})
+    monkeypatch.setattr(finder, "resolve_xfetch", lambda value: "xfetch")
+    monkeypatch.setattr(finder, "resolve_python", lambda value: "python")
+    monkeypatch.setattr(finder, "prepare_x_auth", lambda args, env, py, xfetch: env)
+    monkeypatch.setattr(finder, "auth_ok", lambda py, xfetch, env: (True, ""))
+    searched = []
+
+    def fake_search(py, xfetch, query, args, env, raw_dir):
+        searched.append(query)
+        return [{
+            "id": "auto-1",
+            "text": "Honda Beat kei car design details",
+            "favorite_count": 100,
+            "author": {"screen_name": "car", "name": "Car"},
+            "media": [{"type": "video", "url": "https://example.com/video"}],
+        }]
+
+    monkeypatch.setattr(finder, "search_query", fake_search)
+
+    finder.main()
+
+    manifest = json.loads((out / "manifest.json").read_text())
+    saved_plan = json.loads((out / "topic_plan.json").read_text())
+    assert manifest["topic_plan"] == saved_plan
+    assert manifest["prompt"] == saved_plan["prompt"]
+    assert saved_plan["pillar"] == "rare_models"
+    assert saved_plan["series_episode"] == 1
+    assert manifest["queries"] == searched
+    assert len(searched) == 3
+    assert all("min_faves:5" in query and "since:2026-11-01" in query for query in searched)
+    assert "20 条轮动的第 1 位" in (out / "REPORT.md").read_text()
+
+
+def test_manual_mode_still_requires_prompt(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(sys, "argv", ["finder.py"])
+    with pytest.raises(SystemExit):
+        finder.main()

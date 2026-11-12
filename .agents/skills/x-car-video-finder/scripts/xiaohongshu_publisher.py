@@ -50,14 +50,25 @@ def validate_content(item):
 
 def build_plan(out_dir, tweet_id, history, confirm_publish=False):
     item = load_download(out_dir, tweet_id)
+    manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
+    topic_plan = manifest.get("topic_plan") or {}
     candidate = item["candidate"]
     title, body, topics, video = validate_content(item)
     match = history.check(candidate.get("id"), title)
+    topic_details = {
+        "brand": item.get("brand") or "",
+        "file_topic": item.get("file_topic") or "",
+        "topic_pillar": topic_plan.get("pillar") or "",
+        "topic_series_id": topic_plan.get("series_id") or "",
+        "topic_series_episode": topic_plan.get("series_episode") or "",
+        "topic_strategy_version": topic_plan.get("strategy_version") or "",
+    }
     base = {
         "source_id": str(candidate.get("id")),
         "source_url": candidate.get("url") or "",
         "title": title,
         "history_file": str(history.path),
+        **{key: value for key, value in topic_details.items() if value != ""},
     }
     if match:
         return {"status": "skipped", "reason": "already_published", "match": match, **base}
@@ -90,9 +101,14 @@ def record_result(out_dir, history, status="published", note_url=""):
         raise ValueError("发布计划不是 ready 状态，不能记录发布结果")
     if not plan.get("confirm_publish"):
         raise ValueError("预演计划没有 confirm_publish，不能写入已发布历史")
+    topic_fields = (
+        "brand", "file_topic", "topic_pillar", "topic_series_id",
+        "topic_series_episode", "topic_strategy_version",
+    )
     record = history.add(
         plan["source_id"], plan["title"], plan.get("source_url", ""), status,
         note_url=note_url, video_file=plan.get("video_file", ""),
+        **{key: plan[key] for key in topic_fields if key in plan},
     )
     receipt = {
         "status": status,

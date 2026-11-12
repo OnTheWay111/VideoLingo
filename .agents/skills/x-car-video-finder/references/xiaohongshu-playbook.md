@@ -20,6 +20,14 @@
 
 同一系列至少规划 5 期，例如“转子发动机系列”“90 年代 JDM 系列”“不可思议的概念车系列”。每条独立看懂，但统一命名为《罕见车图鉴 01》《罕见车图鉴 02》等；结尾预告下一期的车型类别，不泄露不准确信息。不要连续发布相同车型或只靠豪车价格刺激。
 
+### 自动选题执行规则
+
+无需人工输入主题时运行 `finder.py --auto-topic`。计划器按固定 20 条顺序轮动，每轮包含 12 条稀有车型、5 条改装机械和 3 条视觉实验，避免短期样本不足导致配比漂移；同一栏目内每 5 期切换一个系列。只查看计划时可单独运行 `topic_planner.py`，不会访问 X 或修改历史。
+
+计划器以 `published_videos.jsonl` 中 `published` 和 `unconfirmed` 记录计算下一条位置，并读取自动发布登记保存的 `topic_pillar`、`topic_series_id` 和 `topic_series_episode`。搜索、预演和未登记结果不会消耗期数；旧记录没有这些字段时仍参与去重和 20 条位置计算，但不能参与系列进度计算。
+
+每次计划包含栏目、系列、期数、推荐成片时长、三组英文检索式、禁选排除词、100 分评分维度、70 分阈值以及近期标题和品牌。互动量排序只负责候选预筛；Agent 必须结合原帖和抽帧完成评分、系列相关性及近期车型重复检查，最终入选不足时递补候选。自动选题不授权自动点击发布，版权不清、未标明的 AI/概念画面和其他硬性禁选项仍直接淘汰。
+
 ### 100 分选题模型
 
 先执行禁选和版权检查，再评分；优先发布 70 分以上：
@@ -57,7 +65,7 @@
 .agents/skills/x-car-video-finder/state/published_videos.jsonl
 ```
 
-每行一条 JSON，至少保存 `source_id`（X 原帖唯一 ID）、`title`、`source_url`、`platform`、`status`、`recorded_at`。`published` 和 `unconfirmed` 都视为已占用，禁止再次发布。可用 `--history-file` 或环境变量 `X_CAR_PUBLISH_HISTORY_FILE` 在测试时指定隔离文件，正式使用不要改路径。
+每行一条 JSON，至少保存 `source_id`（X 原帖唯一 ID）、`title`、`source_url`、`platform`、`status`、`recorded_at`。`published` 和 `unconfirmed` 都视为已占用，禁止再次发布。自动选题发布还会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、`topic_strategy_version`、`brand` 和 `file_topic`，作为后续轮动及重复检查的输入。可用 `--history-file` 或环境变量 `X_CAR_PUBLISH_HISTORY_FILE` 在测试时指定隔离文件，正式使用不要改路径。
 
 如果以前已经手动发布过，先登记历史；唯一 ID 和标题都提供更可靠。要保证在下载前跳过必须登记 `source_id`；只有标题的历史记录会在生成发布计划时兜底拦截：
 

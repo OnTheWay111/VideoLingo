@@ -196,3 +196,32 @@ def test_publisher_blocks_forbidden_topic_even_with_neutral_title(tmp_path):
     with pytest.raises(ValueError, match="禁选主题"):
         xiaohongshu_publisher.build_plan(tmp_path, "123", history)
     assert history.records() == []
+
+
+def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
+    item = finalized_output(tmp_path)
+    item["brand"] = "Honda"
+    item["file_topic"] = "Beat 车身细节"
+    topic_plan = {
+        "strategy_version": 1,
+        "pillar": "rare_models",
+        "series_id": "rare_jdm_90s",
+        "series_episode": 1,
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "downloads": [item],
+        "topic_plan": topic_plan,
+    }, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, confirm_publish=True)
+    xiaohongshu_publisher.save_plan(tmp_path, plan)
+
+    xiaohongshu_publisher.record_result(tmp_path, history)
+
+    saved = history.check(source_id="123")
+    assert saved["brand"] == "Honda"
+    assert saved["file_topic"] == "Beat 车身细节"
+    assert saved["topic_pillar"] == "rare_models"
+    assert saved["topic_series_id"] == "rare_jdm_90s"
+    assert saved["topic_series_episode"] == 1
+    assert saved["topic_strategy_version"] == 1
