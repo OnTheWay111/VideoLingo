@@ -143,9 +143,11 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
-该脚本在 macOS 上只复制 Chrome 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，使用 `websocket-client` 通过 CDP 操作独立 Chrome；不会修改原浏览器配置或标签页，退出时删除临时配置，不输出 Cookie 值。`--browser-profile` 默认 `Default`，`--only` 可限制为一条，去掉 `--headless` 可显示浏览器。
+该脚本在 macOS 上只复制 Chrome 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，使用 `websocket-client` 通过 CDP 操作独立 Chrome；不会修改原浏览器配置或标签页，初始化或发布异常时也清理临时配置，不输出 Cookie 值。`--browser-profile` 默认 `Default`，`--only` 可限制为一条，去掉 `--headless` 可显示浏览器。
 
-脚本使用正常 Chrome 标识避免降级页面，通过无障碍树等待发布按钮真正启用，再按节点位置发送真实鼠标事件。标题、正文和话题填写后保存发布前截图，成功或待确认时保存结果截图到 `<out>/browser/`。批量发布逐条检查历史，任何待确认或错误都会停止后续项。
+脚本使用正常 Chrome 标识避免降级页面，通过无障碍树等待发布按钮真正启用，再按节点位置发送真实鼠标事件。标题、正文和话题填写后先复读核验，再保存发布前截图；成功或待确认时保存结果截图到 `<out>/browser/`。批量按 manifest 入选顺序逐条执行，任何待确认或错误都会停止后续项。`result_url` 是发布结果页，`note_url` 只能是公开笔记地址，二者不得混用。
+
+所有实测问题、根因、异常处理和发布前检查清单见 [小红书 Chrome 发布实测经验与故障手册](xiaohongshu-chrome-troubleshooting.md)。修改 Chrome 发布逻辑后必须按该手册补回归，不要只验证“脚本能运行”。
 
 如果点击后结果不确定，历史先记 `unconfirmed`。必须到创作者后台确认实际未发布后，才能用以下命令更正为 `failed` 并重试；不得仅因超时就强行解锁：
 

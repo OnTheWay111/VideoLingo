@@ -93,7 +93,7 @@ def save_plan(out_dir, plan):
     return path
 
 
-def record_result(out_dir, history, status="published", note_url=""):
+def record_result(out_dir, history, status="published", note_url="", result_url=""):
     out_dir = Path(out_dir)
     plan_path = out_dir / "xiaohongshu_publish_plan.json"
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -107,7 +107,7 @@ def record_result(out_dir, history, status="published", note_url=""):
     )
     record = history.add(
         plan["source_id"], plan["title"], plan.get("source_url", ""), status,
-        note_url=note_url, video_file=plan.get("video_file", ""),
+        note_url=note_url, result_url=result_url, video_file=plan.get("video_file", ""),
         **{key: plan[key] for key in topic_fields if key in plan},
     )
     receipt = {
@@ -115,6 +115,7 @@ def record_result(out_dir, history, status="published", note_url=""):
         "source_id": plan["source_id"],
         "title": plan["title"],
         "note_url": note_url,
+        "result_url": result_url,
         "history_file": str(history.path),
         "recorded_at": record["recorded_at"],
     }

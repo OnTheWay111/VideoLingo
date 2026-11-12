@@ -123,9 +123,11 @@ def test_successful_record_blocks_future_plan(tmp_path):
     xiaohongshu_publisher.save_plan(tmp_path, plan)
 
     receipt = xiaohongshu_publisher.record_result(
-        tmp_path, history, note_url="https://www.xiaohongshu.com/explore/note1")
+        tmp_path, history, note_url="https://www.xiaohongshu.com/explore/note1",
+        result_url="https://creator.xiaohongshu.com/publish/success")
 
     assert receipt["status"] == "published"
+    assert receipt["result_url"].endswith("/publish/success")
     assert history.check(source_id="123")["note_url"].endswith("note1")
     skipped = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
     assert skipped["status"] == "skipped"

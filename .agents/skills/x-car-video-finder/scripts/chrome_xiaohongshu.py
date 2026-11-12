@@ -30,8 +30,8 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def copy_profile(source_dir, target_dir):
-    source = Path(source_dir) / "Default"
+def copy_profile(source_dir, target_dir, profile="Default"):
+    source = Path(source_dir) / profile
     target = Path(target_dir) / "Default"
     target.mkdir(parents=True, exist_ok=True)
     local_state = Path(source_dir) / "Local State"
@@ -53,6 +53,14 @@ def publish_success(text, url):
     return success_text or success_url
 
 
+def public_note_url(url):
+    public_prefixes = (
+        "https://www.xiaohongshu.com/explore/",
+        "https://www.xiaohongshu.com/discovery/item/",
+    )
+    return url if url.startswith(public_prefixes) else ""
+
+
 class ChromeSession:
     def __init__(self, profile="Default", headless=False, timeout=180):
         self.profile = profile
@@ -65,6 +73,13 @@ class ChromeSession:
         self.publish_clicked = False
 
     def __enter__(self):
+        try:
+            return self._start()
+        except Exception:
+            self.__exit__(*sys.exc_info())
+            raise
+
+    def _start(self):
         if sys.platform != "darwin":
             raise RuntimeError("目前仅支持 macOS Chrome")
         try:
@@ -73,7 +88,7 @@ class ChromeSession:
             raise RuntimeError("缺少 websocket-client，请安装到 .venv-xfetch") from exc
         self.work = tempfile.mkdtemp(prefix="xhs-chrome-")
         profile_dir = os.path.join(self.work, "profile")
-        copy_profile(os.path.expanduser(CHROME_DATA), profile_dir)
+        copy_profile(os.path.expanduser(CHROME_DATA), profile_dir, self.profile)
         port = free_port()
         cmd = [CHROME_BINARY, "--no-sandbox", "--disable-gpu", "--disable-crashpad", "--disable-dev-shm-usage",
                "--remote-debugging-port=%d" % port, "--user-data-dir=%s" % profile_dir,
@@ -122,7 +137,7 @@ class ChromeSession:
                 break
             time.sleep(0.5)
         if not count:
-            raise RuntimeError("Chrome Default 配置中没有小红书登录 Cookie")
+            raise RuntimeError("Chrome %s 配置中没有小红书登录 Cookie" % self.profile)
         print("已复制 Chrome 小红书会话（不输出 Cookie 值）", flush=True)
         return self
 
@@ -209,6 +224,18 @@ class ChromeSession:
         self.evaluate("document.querySelector(%s).focus()" % escaped)
         self.call("Input.insertText", {"text": text})
 
+    def verify_content(self, plan):
+        title = self.evaluate("document.querySelector('input[placeholder*=标题]').value")
+        if title != plan["title"]:
+            raise RuntimeError("标题复核不一致，未点击发布")
+        body = self.evaluate(
+            "Array.from(document.querySelectorAll('textarea,div[contenteditable=true]'))"
+            ".map(element => element.innerText || element.value || '').join('\\n')") or ""
+        expected = [plan["body"][:30], *plan["topics"]]
+        missing = [value for value in expected if value and value not in body]
+        if missing:
+            raise RuntimeError("正文或话题复核不一致，未点击发布：%s" % "、".join(missing))
+
     def editor_present(self):
         return self.evaluate("Boolean(document.querySelector('input[placeholder*=标题]'))")
 
@@ -265,6 +292,7 @@ class ChromeSession:
         self.insert_text("input[placeholder*=标题]", plan["title"])
         body_selector = "textarea[placeholder*=描述], div[contenteditable=true]"
         self.insert_text(body_selector, plan["full_text"])
+        self.verify_content(plan)
         self.wait_for_upload()
         before = Path(out_dir) / "browser" / ("%s_before.png" % plan["source_id"])
         self.screenshot(before)
@@ -276,16 +304,29 @@ class ChromeSession:
             if publish_success(state.get("text", ""), state.get("url", "")):
                 after = Path(out_dir) / "browser" / ("%s_after.png" % plan["source_id"])
                 self.screenshot(after)
-                return {"status": "published", "note_url": state.get("url", "")}
+                return {"status": "published", "note_url": public_note_url(state.get("url", "")),
+                        "result_url": state.get("url", "")}
             time.sleep(2)
         after = Path(out_dir) / "browser" / ("%s_unconfirmed.png" % plan["source_id"])
         self.screenshot(after)
-        return {"status": "unconfirmed", "note_url": state.get("url", "")}
+        return {"status": "unconfirmed", "note_url": public_note_url(state.get("url", "")),
+                "result_url": state.get("url", "")}
 
 
 def load_plans(out_dir, only=None):
-    plans_dir = Path(out_dir) / "plans_confirmed"
-    paths = [plans_dir / ("%s.json" % only)] if only else sorted(plans_dir.glob("*.json"))
+    out_dir = Path(out_dir)
+    plans_dir = out_dir / "plans_confirmed"
+    if only:
+        paths = [plans_dir / ("%s.json" % only)]
+    else:
+        manifest_path = out_dir / "manifest.json"
+        ordered_ids = []
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text())
+            ordered_ids = [str(item["candidate"]["id"]) for item in manifest.get("downloads", [])]
+        paths = [plans_dir / ("%s.json" % source_id) for source_id in ordered_ids]
+        included = {path.name for path in paths}
+        paths.extend(path for path in sorted(plans_dir.glob("*.json")) if path.name not in included)
     if not paths or any(not path.is_file() for path in paths):
         raise ValueError("找不到确认发布计划")
     plans = []
@@ -319,23 +360,27 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
             print("开始发布：%s" % plan["title"], flush=True)
             try:
                 result = chrome.publish_plan(out_dir, plan)
-                receipt = record_result(out_dir, history, result["status"], result.get("note_url", ""))
+                receipt = record_result(out_dir, history, result["status"], result.get("note_url", ""),
+                                        result.get("result_url", ""))
                 results.append({"source_id": plan["source_id"], "title": plan["title"],
                                 "status": result["status"], "note_url": result.get("note_url", ""),
-                                "receipt": receipt})
+                                "result_url": result.get("result_url", ""), "receipt": receipt})
                 if result["status"] != "published":
                     print("发布结果待确认，停止后续发布：%s" % plan["title"], flush=True)
                     break
                 print("发布成功：%s" % plan["title"], flush=True)
                 time.sleep(3)
             except Exception as exc:
-                debug_dir = Path(out_dir) / "browser"
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                state = chrome.page_state()
-                state["publish_controls"] = chrome.publish_controls()
-                (debug_dir / ("%s_error.json" % plan["source_id"])).write_text(
-                    json.dumps(state, ensure_ascii=False, indent=2) + "\n")
-                chrome.screenshot(debug_dir / ("%s_error.png" % plan["source_id"]))
+                try:
+                    debug_dir = Path(out_dir) / "browser"
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    state = chrome.page_state()
+                    state["publish_controls"] = chrome.publish_controls()
+                    (debug_dir / ("%s_error.json" % plan["source_id"])).write_text(
+                        json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+                    chrome.screenshot(debug_dir / ("%s_error.png" % plan["source_id"]))
+                except Exception:
+                    pass
                 status = "unconfirmed" if chrome.publish_clicked else "error"
                 if chrome.publish_clicked:
                     receipt = record_result(out_dir, history, "unconfirmed")

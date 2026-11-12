@@ -98,3 +98,69 @@ def test_publish_backend_node_waits_for_enabled_button():
     ]}
 
     assert session.publish_backend_node() == 2
+
+
+def test_result_page_is_not_public_note_url():
+    success = "https://creator.xiaohongshu.com/publish/success?source=official"
+    public = "https://www.xiaohongshu.com/explore/abc123"
+
+    assert chrome.public_note_url(success) == ""
+    assert chrome.public_note_url(public) == public
+
+
+def test_copy_profile_honors_source_profile(tmp_path):
+    source = tmp_path / "source"
+    (source / "Profile 1").mkdir(parents=True)
+    (source / "Profile 1" / "Cookies").write_bytes(b"profile-one")
+    target = tmp_path / "target"
+
+    chrome.copy_profile(source, target, "Profile 1")
+
+    assert (target / "Default" / "Cookies").read_bytes() == b"profile-one"
+
+
+def test_load_plans_uses_manifest_download_order(tmp_path):
+    plans = tmp_path / "plans_confirmed"
+    plans.mkdir()
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    for source_id in ("200", "100"):
+        (plans / ("%s.json" % source_id)).write_text(json.dumps({
+            "status": "ready", "confirm_publish": True, "video_file": str(video),
+            "source_id": source_id,
+        }))
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [
+        {"candidate": {"id": "100"}}, {"candidate": {"id": "200"}},
+    ]}))
+
+    assert [plan["source_id"] for plan in chrome.load_plans(tmp_path)] == ["100", "200"]
+
+
+def test_verify_content_rechecks_title_body_and_topics():
+    session = chrome.ChromeSession(headless=True)
+    plan = {"title": "标题", "body": "这是一段用于复核的正文内容", "topics": ["#汽车", "#改装车"]}
+    session.evaluate = lambda expression: (
+        plan["title"] if expression.endswith(".value") else plan["body"] + " " + " ".join(plan["topics"])
+    )
+
+    session.verify_content(plan)
+
+    session.evaluate = lambda expression: plan["title"] if expression.endswith(".value") else "错误正文"
+    with pytest.raises(RuntimeError, match="复核"):
+        session.verify_content(plan)
+
+
+def test_enter_failure_cleans_temporary_profile(tmp_path):
+    session = chrome.ChromeSession(headless=True)
+    session.work = str(tmp_path / "temporary-profile")
+    Path(session.work).mkdir()
+    Path(session.work, "Cookies").write_bytes(b"temp")
+
+    def fail_start():
+        raise RuntimeError("模拟初始化失败")
+
+    session._start = fail_start
+    with pytest.raises(RuntimeError, match="初始化失败"):
+        session.__enter__()
+
+    assert not Path(session.work).exists()
