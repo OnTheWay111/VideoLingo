@@ -174,6 +174,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert saved["downloads"][0]["video"]["file"] == str(selected_path)
     report = (tmp_path / "REPORT.md").read_text()
     assert "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |" in report
+    assert "[奇怪汽车：飞行/翻滚](<%s>)" % selected_path.as_posix() in report
     assert "`1.Bugatti_奇怪汽车：飞行-翻滚.mp4`" in report
     assert "`1.Peralta_淘汰视频标题.mp4`" in report
     assert "#改装车 #Goodwood2026" in report

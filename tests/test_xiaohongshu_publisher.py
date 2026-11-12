@@ -42,6 +42,8 @@ def finalized_output(tmp_path, tweet_id="123", title="罕见跑车亮相"):
         "title": title,
         "recommendation": "这台罕见跑车在海外活动中亮相，展示独特的车身设计。",
         "topics": ["#罕见车型", "#汽车文化"],
+        "ai_disclosure": "选题及文字由 AI 辅助整理，经人工复核。",
+        "rights_confirmed": True,
     }
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     return item
@@ -227,3 +229,36 @@ def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
     assert saved["topic_series_id"] == "rare_jdm_90s"
     assert saved["topic_series_episode"] == 1
     assert saved["topic_strategy_version"] == 1
+
+
+def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
+    finalized_output(tmp_path)
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="draft")
+    xiaohongshu_publisher.save_plan(tmp_path, plan)
+    drafts = publish_history.PublishedHistory(tmp_path / "drafts.jsonl")
+
+    assert plan["action"] == "draft"
+    assert plan["confirm_publish"] is False
+    assert "AI 辅助整理" in plan["full_text"]
+    receipt = xiaohongshu_publisher.record_draft(tmp_path, draft_history=drafts)
+
+    assert receipt["status"] == "draft_saved"
+    assert drafts.records()[0]["status"] == "draft_saved"
+    assert history.records() == []
+
+
+def test_publish_and_draft_require_disclosure_and_rights(tmp_path):
+    item = finalized_output(tmp_path)
+    item["ai_disclosure"] = ""
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="ai_disclosure"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="publish")
+
+    item["ai_disclosure"] = "AI 辅助整理"
+    item["rights_confirmed"] = False
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    with pytest.raises(ValueError, match="rights_confirmed"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="draft")

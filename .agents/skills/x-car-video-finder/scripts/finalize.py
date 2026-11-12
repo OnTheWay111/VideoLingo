@@ -66,6 +66,8 @@ def load_publish(path):
             "brand": brand,
             "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
+            "ai_disclosure": str(item.get("ai_disclosure") or "").strip(),
+            "rights_confirmed": item.get("rights_confirmed") is True,
         }
     return result
 
@@ -78,9 +80,10 @@ def render_row(item, index, rejected=False):
     candidate = item["candidate"]
     video = item["video"]
     path = Path(video["file"])
+    title = "[%s](<%s>)" % (item["title"], path.resolve().as_posix())
     cells = [
         index,
-        item["title"],
+        title,
         item["recommendation"],
         " ".join(item["topics"]),
         "`%s`" % path.name,
@@ -181,6 +184,8 @@ def finalize(out_dir, publish_file):
             item["brand"] = content["brand"]
             item["file_topic"] = content["file_topic"]
             item["topics"] = content["topics"]
+            item["ai_disclosure"] = content["ai_disclosure"]
+            item["rights_confirmed"] = content["rights_confirmed"]
 
     for source, target in operations:
         source.rename(target)

@@ -6,6 +6,7 @@ import base64
 import datetime
 import json
 import os
+import random
 import shutil
 import signal
 import subprocess
@@ -16,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 from publish_history import PublishedHistory, default_history_path
-from xiaohongshu_publisher import record_result
+from xiaohongshu_publisher import record_draft, record_result
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_DATA = "~/Library/Application Support/Google/Chrome"
@@ -61,6 +62,16 @@ def public_note_url(url):
     return url if url.startswith(public_prefixes) else ""
 
 
+def random_delay_seconds():
+    return random.SystemRandom().randint(60, 600)
+
+
+def draft_success(text):
+    if any(value in text for value in ("草稿保存成功", "已保存草稿", "保存成功")):
+        return True
+    return any("草稿箱(%d)" % count in text for count in range(1, 100))
+
+
 class ChromeSession:
     def __init__(self, profile="Default", headless=False, timeout=180):
         self.profile = profile
@@ -71,6 +82,7 @@ class ChromeSession:
         self.ws = None
         self.seq = 0
         self.publish_clicked = False
+        self.draft_clicked = False
 
     def __enter__(self):
         try:
@@ -239,7 +251,7 @@ class ChromeSession:
     def editor_present(self):
         return self.evaluate("Boolean(document.querySelector('input[placeholder*=标题]'))")
 
-    def publish_backend_node(self):
+    def publish_backend_node(self, button_name="发布"):
         result = self.call("Accessibility.getFullAXTree")
         for node in result.get("nodes", []):
             role = (node.get("role") or {}).get("value")
@@ -248,25 +260,25 @@ class ChromeSession:
                 prop.get("name") == "disabled" and (prop.get("value") or {}).get("value") is True
                 for prop in node.get("properties", [])
             )
-            if not node.get("ignored") and role == "button" and name == "发布" and not disabled:
+            if not node.get("ignored") and role == "button" and name == button_name and not disabled:
                 return node.get("backendDOMNodeId")
         return None
 
-    def publish_enabled(self):
-        return self.publish_backend_node() is not None
+    def publish_enabled(self, button_name="发布"):
+        return self.publish_backend_node(button_name) is not None
 
-    def wait_for_upload(self):
+    def wait_for_upload(self, button_name="发布"):
         deadline = time.time() + self.timeout
         while time.time() < deadline:
-            if self.editor_present() and self.publish_enabled():
+            if self.editor_present() and self.publish_enabled(button_name):
                 return
             time.sleep(2)
-        raise RuntimeError("视频上传或转码等待超时，未点击发布")
+        raise RuntimeError("视频上传或转码等待超时，未执行后续操作")
 
-    def click_publish(self):
-        backend_node = self.publish_backend_node()
+    def click_publish(self, button_name="发布"):
+        backend_node = self.publish_backend_node(button_name)
         if not backend_node:
-            raise RuntimeError("发布按钮不可用，未点击发布")
+            raise RuntimeError("按钮不可用：%s" % button_name)
         self.call("DOM.scrollIntoViewIfNeeded", {"backendNodeId": backend_node})
         model = self.call("DOM.getBoxModel", {"backendNodeId": backend_node}).get("model", {})
         quad = model["content"]
@@ -278,10 +290,12 @@ class ChromeSession:
         self.call("Input.dispatchMouseEvent", {
             "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
         })
-        self.publish_clicked = True
+        if button_name == "发布":
+            self.publish_clicked = True
+        else:
+            self.draft_clicked = True
 
-    def publish_plan(self, out_dir, plan):
-        self.publish_clicked = False
+    def prepare_plan(self, out_dir, plan, action="publish"):
         self.navigate_publish()
         self.upload(plan["video_file"])
         deadline = time.time() + self.timeout
@@ -293,9 +307,12 @@ class ChromeSession:
         body_selector = "textarea[placeholder*=描述], div[contenteditable=true]"
         self.insert_text(body_selector, plan["full_text"])
         self.verify_content(plan)
-        self.wait_for_upload()
-        before = Path(out_dir) / "browser" / ("%s_before.png" % plan["source_id"])
-        self.screenshot(before)
+        self.wait_for_upload("暂存离开" if action == "draft" else "发布")
+        self.screenshot(Path(out_dir) / "browser" / ("%s_before.png" % plan["source_id"]))
+
+    def publish_plan(self, out_dir, plan):
+        self.publish_clicked = False
+        self.prepare_plan(out_dir, plan)
         self.click_publish()
         deadline = time.time() + 60
         state = self.page_state()
@@ -311,6 +328,23 @@ class ChromeSession:
         self.screenshot(after)
         return {"status": "unconfirmed", "note_url": public_note_url(state.get("url", "")),
                 "result_url": state.get("url", "")}
+
+    def draft_plan(self, out_dir, plan):
+        self.draft_clicked = False
+        self.prepare_plan(out_dir, plan, "draft")
+        self.click_publish("暂存离开")
+        deadline = time.time() + 60
+        state = self.page_state()
+        while time.time() < deadline:
+            state = self.page_state()
+            if draft_success(state.get("text", "")):
+                after = Path(out_dir) / "browser" / ("%s_draft.png" % plan["source_id"])
+                self.screenshot(after)
+                return {"status": "draft_saved", "result_url": state.get("url", "")}
+            time.sleep(2)
+        after = Path(out_dir) / "browser" / ("%s_draft_unconfirmed.png" % plan["source_id"])
+        self.screenshot(after)
+        return {"status": "unconfirmed_draft", "result_url": state.get("url", "")}
 
 
 def load_plans(out_dir, only=None):
@@ -332,23 +366,29 @@ def load_plans(out_dir, only=None):
     plans = []
     for path in paths:
         plan = json.loads(path.read_text())
-        if plan.get("status") != "ready" or not plan.get("confirm_publish"):
-            raise ValueError("计划未获得实际发布确认：%s" % path)
+        action = plan.get("action") or ("publish" if plan.get("confirm_publish") else "preview")
+        if plan.get("status") != "ready" or action not in ("publish", "draft"):
+            raise ValueError("计划未获得发布或草稿确认：%s" % path)
+        if action == "publish" and not plan.get("confirm_publish"):
+            raise ValueError("发布计划缺少 confirm_publish：%s" % path)
+        plan["action"] = action
         if not Path(plan["video_file"]).is_file():
             raise ValueError("计划视频不存在：%s" % plan["video_file"])
         plans.append(plan)
     return plans
 
 
-def run(out_dir, history, profile, headless, only=None, preflight=False, timeout=180):
+def run(out_dir, history, profile, headless, only=None, preflight=False, timeout=180,
+        sleep_fn=time.sleep, delay_fn=None):
     plans = load_plans(out_dir, only)
+    delay_fn = delay_fn or random_delay_seconds
     results = []
     with ChromeSession(profile, headless, timeout) as chrome:
         chrome.navigate_publish()
         print("Chrome 小红书登录态与上传页验证通过", flush=True)
         if preflight:
             return {"status": "ready", "published": 0, "results": []}
-        for plan in plans:
+        for index, plan in enumerate(plans):
             match = history.check(plan["source_id"], plan["title"])
             if match:
                 print("跳过已发布或待确认：%s" % plan["title"], flush=True)
@@ -357,19 +397,28 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                 continue
             (Path(out_dir) / "xiaohongshu_publish_plan.json").write_text(
                 json.dumps(plan, ensure_ascii=False, indent=2) + "\n")
-            print("开始发布：%s" % plan["title"], flush=True)
+            action = plan["action"]
+            print("开始%s：%s" % ("发布" if action == "publish" else "保存草稿", plan["title"]), flush=True)
             try:
-                result = chrome.publish_plan(out_dir, plan)
-                receipt = record_result(out_dir, history, result["status"], result.get("note_url", ""),
-                                        result.get("result_url", ""))
+                if action == "draft":
+                    result = chrome.draft_plan(out_dir, plan)
+                    receipt = record_draft(out_dir, result["status"], result.get("result_url", ""))
+                else:
+                    result = chrome.publish_plan(out_dir, plan)
+                    receipt = record_result(out_dir, history, result["status"], result.get("note_url", ""),
+                                            result.get("result_url", ""))
                 results.append({"source_id": plan["source_id"], "title": plan["title"],
                                 "status": result["status"], "note_url": result.get("note_url", ""),
                                 "result_url": result.get("result_url", ""), "receipt": receipt})
-                if result["status"] != "published":
-                    print("发布结果待确认，停止后续发布：%s" % plan["title"], flush=True)
+                if result["status"] not in ("published", "draft_saved"):
+                    print("结果待确认，停止后续操作：%s" % plan["title"], flush=True)
                     break
-                print("发布成功：%s" % plan["title"], flush=True)
-                time.sleep(3)
+                print("操作成功：%s" % plan["title"], flush=True)
+                sleep_fn(3)
+                if action == "publish" and index < len(plans) - 1:
+                    delay = delay_fn()
+                    print("下一条发布前随机等待 %.1f 分钟" % (delay / 60), flush=True)
+                    sleep_fn(delay)
             except Exception as exc:
                 try:
                     debug_dir = Path(out_dir) / "browser"
@@ -381,22 +430,26 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                     chrome.screenshot(debug_dir / ("%s_error.png" % plan["source_id"]))
                 except Exception:
                     pass
-                status = "unconfirmed" if chrome.publish_clicked else "error"
                 if chrome.publish_clicked:
+                    status = "unconfirmed"
                     receipt = record_result(out_dir, history, "unconfirmed")
-                    results.append({"source_id": plan["source_id"], "title": plan["title"],
-                                    "status": status, "receipt": receipt, "error": str(exc)})
+                elif chrome.draft_clicked:
+                    status = "unconfirmed_draft"
+                    receipt = record_draft(out_dir, "unconfirmed_draft")
                 else:
-                    results.append({"source_id": plan["source_id"], "title": plan["title"],
-                                    "status": status, "error": str(exc)})
-                print("%s：%s；停止后续发布" % (status, str(exc)), flush=True)
+                    status = "error"
+                    receipt = None
+                results.append({"source_id": plan["source_id"], "title": plan["title"],
+                                "status": status, "receipt": receipt, "error": str(exc)})
+                print("%s：%s；停止后续操作" % (status, str(exc)), flush=True)
                 break
     summary = {
         "status": "complete" if len(results) == len(plans) and all(
-            item["status"] in ("published", "skipped") for item in results) else "incomplete",
+            item["status"] in ("published", "draft_saved", "skipped") for item in results) else "incomplete",
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "published": sum(item["status"] == "published" for item in results),
-        "unconfirmed": sum(item["status"] == "unconfirmed" for item in results),
+        "draft_saved": sum(item["status"] == "draft_saved" for item in results),
+        "unconfirmed": sum(item["status"] in ("unconfirmed", "unconfirmed_draft") for item in results),
         "skipped": sum(item["status"] == "skipped" for item in results),
         "results": results,
     }

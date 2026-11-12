@@ -61,7 +61,7 @@ def test_load_plans_requires_confirmation_and_real_video(tmp_path):
 
 def test_click_publish_tracks_actual_click_for_unconfirmed_recovery():
     session = chrome.ChromeSession(headless=True)
-    session.publish_backend_node = lambda: 42
+    session.publish_backend_node = lambda button_name="发布": 42
     calls = []
 
     def fake_call(method, params=None):
@@ -164,3 +164,78 @@ def test_enter_failure_cleans_temporary_profile(tmp_path):
         session.__enter__()
 
     assert not Path(session.work).exists()
+
+
+def test_random_delay_is_between_one_and_ten_minutes():
+    for _ in range(100):
+        assert 60 <= chrome.random_delay_seconds() <= 600
+
+
+def test_load_plans_accepts_draft_action(tmp_path):
+    plans = tmp_path / "plans_confirmed"
+    plans.mkdir()
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    (plans / "123.json").write_text(json.dumps({
+        "status": "ready", "action": "draft", "confirm_publish": False,
+        "video_file": str(video), "source_id": "123", "title": "草稿标题",
+    }))
+
+    assert chrome.load_plans(tmp_path)[0]["action"] == "draft"
+
+
+def test_random_delay_only_occurs_between_successful_publications(tmp_path, monkeypatch):
+    plans = tmp_path / "plans_confirmed"
+    plans.mkdir()
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    for source_id in ("100", "200"):
+        (plans / ("%s.json" % source_id)).write_text(json.dumps({
+            "status": "ready", "action": "publish", "confirm_publish": True,
+            "video_file": str(video), "source_id": source_id, "title": source_id,
+        }))
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [
+        {"candidate": {"id": "100"}}, {"candidate": {"id": "200"}},
+    ]}))
+
+    class FakeChrome:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def navigate_publish(self):
+            return None
+
+        def publish_plan(self, out_dir, plan):
+            return {"status": "published", "note_url": "", "result_url": "success"}
+
+    monkeypatch.setattr(chrome, "ChromeSession", lambda *args, **kwargs: FakeChrome())
+    monkeypatch.setattr(chrome, "record_result", lambda *args, **kwargs: {"status": "published"})
+    sleeps = []
+    history = chrome.PublishedHistory(tmp_path / "history.jsonl")
+
+    summary = chrome.run(tmp_path, history, "Default", True,
+                         sleep_fn=sleeps.append, delay_fn=lambda: 321)
+
+    assert summary["status"] == "complete"
+    assert summary["published"] == 2
+    assert sleeps == [3, 321, 3]
+
+
+def test_draft_success_requires_saved_state_or_nonzero_draft_count():
+    assert chrome.draft_success("草稿箱(1)")
+    assert chrome.draft_success("草稿保存成功")
+    assert not chrome.draft_success("草稿箱(0)")
+
+
+def test_wait_for_upload_uses_action_specific_button():
+    session = chrome.ChromeSession(headless=True)
+    session.editor_present = lambda: True
+    names = []
+    session.publish_enabled = lambda name: names.append(name) or True
+
+    session.wait_for_upload("暂存离开")
+
+    assert names == ["暂存离开"]

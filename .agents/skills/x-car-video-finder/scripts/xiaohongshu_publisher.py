@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成小红书浏览器发布计划，并在实际发布后写入去重历史。"""
+"""生成小红书发布/草稿计划，并分别登记发布和草稿结果。"""
 
 import argparse
 import datetime
@@ -7,10 +7,11 @@ import json
 import sys
 from pathlib import Path
 
-from publish_history import PublishedHistory, default_history_path
+from publish_history import PublishedHistory, default_draft_history_path, default_history_path
 from topic_policy import forbidden_topic_match
 
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+ACTIONS = ("preview", "draft", "publish")
 
 
 def load_download(out_dir, tweet_id):
@@ -48,7 +49,10 @@ def validate_content(item):
     return title, body, [topic.strip() for topic in topics], video.resolve()
 
 
-def build_plan(out_dir, tweet_id, history, confirm_publish=False):
+def build_plan(out_dir, tweet_id, history, confirm_publish=False, action=None):
+    action = action or ("publish" if confirm_publish else "preview")
+    if action not in ACTIONS:
+        raise ValueError("action 必须是 preview、draft 或 publish")
     item = load_download(out_dir, tweet_id)
     manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
     topic_plan = manifest.get("topic_plan") or {}
@@ -72,17 +76,32 @@ def build_plan(out_dir, tweet_id, history, confirm_publish=False):
     }
     if match:
         return {"status": "skipped", "reason": "already_published", "match": match, **base}
+    disclosure = str(item.get("ai_disclosure") or "").strip()
+    if action in ("publish", "draft"):
+        if not disclosure:
+            raise ValueError("发布或保存草稿前必须填写 ai_disclosure")
+        if item.get("rights_confirmed") is not True:
+            raise ValueError("发布或保存草稿前必须明确确认素材授权 rights_confirmed=true")
+    sections = [body]
+    if disclosure:
+        sections.append(disclosure)
+    sections.append(" ".join(topics))
+    browser_actions = ["upload_video", "fill_title", "fill_body", "add_topics", "verify_upload"]
+    browser_actions.append("publish" if action == "publish" else "save_draft")
     return {
         "status": "ready",
         "platform": "xiaohongshu",
+        "action": action,
         "publish_url": PUBLISH_URL,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "video_file": str(video),
         "body": body,
         "topics": topics,
-        "full_text": body + "\n\n" + " ".join(topics),
-        "confirm_publish": bool(confirm_publish),
-        "browser_actions": ["upload_video", "fill_title", "fill_body", "add_topics", "verify_upload"],
+        "ai_disclosure": disclosure,
+        "rights_confirmed": item.get("rights_confirmed") is True,
+        "full_text": "\n\n".join(sections),
+        "confirm_publish": action == "publish",
+        "browser_actions": browser_actions,
         **base,
     }
 
@@ -93,22 +112,30 @@ def save_plan(out_dir, plan):
     return path
 
 
+def load_confirmed_plan(out_dir):
+    plan = json.loads((Path(out_dir) / "xiaohongshu_publish_plan.json").read_text(encoding="utf-8"))
+    if plan.get("status") != "ready":
+        raise ValueError("发布计划不是 ready 状态，不能记录结果")
+    return plan
+
+
+def topic_metadata(plan):
+    fields = (
+        "brand", "file_topic", "topic_pillar", "topic_series_id",
+        "topic_series_episode", "topic_strategy_version", "ai_disclosure", "rights_confirmed",
+    )
+    return {key: plan[key] for key in fields if key in plan}
+
+
 def record_result(out_dir, history, status="published", note_url="", result_url=""):
     out_dir = Path(out_dir)
-    plan_path = out_dir / "xiaohongshu_publish_plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    if plan.get("status") != "ready":
-        raise ValueError("发布计划不是 ready 状态，不能记录发布结果")
+    plan = load_confirmed_plan(out_dir)
     if not plan.get("confirm_publish"):
         raise ValueError("预演计划没有 confirm_publish，不能写入已发布历史")
-    topic_fields = (
-        "brand", "file_topic", "topic_pillar", "topic_series_id",
-        "topic_series_episode", "topic_strategy_version",
-    )
     record = history.add(
         plan["source_id"], plan["title"], plan.get("source_url", ""), status,
         note_url=note_url, result_url=result_url, video_file=plan.get("video_file", ""),
-        **{key: plan[key] for key in topic_fields if key in plan},
+        **topic_metadata(plan),
     )
     receipt = {
         "status": status,
@@ -124,27 +151,63 @@ def record_result(out_dir, history, status="published", note_url="", result_url=
     return receipt
 
 
+def record_draft(out_dir, status="draft_saved", result_url="", draft_history=None):
+    out_dir = Path(out_dir)
+    if status not in ("draft_saved", "unconfirmed_draft"):
+        raise ValueError("草稿状态必须是 draft_saved 或 unconfirmed_draft")
+    plan = load_confirmed_plan(out_dir)
+    if plan.get("action") != "draft":
+        raise ValueError("只有 draft 计划可以写入草稿记录")
+    history = draft_history or PublishedHistory(default_draft_history_path())
+    record = history.add(
+        plan["source_id"], plan["title"], plan.get("source_url", ""), status,
+        result_url=result_url, video_file=plan.get("video_file", ""), **topic_metadata(plan),
+    )
+    receipt = {
+        "status": status,
+        "source_id": plan["source_id"],
+        "title": plan["title"],
+        "result_url": result_url,
+        "history_file": str(history.path),
+        "recorded_at": record["recorded_at"],
+    }
+    receipt_path = out_dir / "xiaohongshu_draft_receipt.json"
+    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, help="finder/finalize 输出目录")
     parser.add_argument("--history-file", default=str(default_history_path()))
     commands = parser.add_subparsers(dest="command", required=True)
-    plan_parser = commands.add_parser("plan", help="生成浏览器发布计划，不直接操作网页")
+    plan_parser = commands.add_parser("plan", help="生成预演、草稿或发布计划，不直接操作网页")
     plan_parser.add_argument("--tweet-id", required=True)
-    plan_parser.add_argument("--confirm-publish", action="store_true", help="用户已明确要求实际发布")
+    plan_parser.add_argument("--action", choices=ACTIONS, default="preview")
+    plan_parser.add_argument("--confirm-publish", action="store_true", help="兼容旧用法，等同 --action publish")
     record_parser = commands.add_parser("record", help="仅在网页发布成功或结果待确认后调用")
     record_parser.add_argument("--status", choices=("published", "unconfirmed"), default="published")
     record_parser.add_argument("--note-url", default="")
+    record_parser.add_argument("--result-url", default="")
+    draft_parser = commands.add_parser("record-draft", help="仅在草稿保存成功或结果待确认后调用")
+    draft_parser.add_argument("--status", choices=("draft_saved", "unconfirmed_draft"), default="draft_saved")
+    draft_parser.add_argument("--result-url", default="")
     args = parser.parse_args(argv)
     out_dir = Path(args.out).resolve()
     history = PublishedHistory(args.history_file)
     try:
         if args.command == "plan":
-            plan = build_plan(out_dir, args.tweet_id, history, args.confirm_publish)
+            if args.confirm_publish and args.action != "preview":
+                raise ValueError("--confirm-publish 只能与默认 preview 动作一起使用，或直接选 --action publish")
+            action = "publish" if args.confirm_publish else args.action
+            plan = build_plan(out_dir, args.tweet_id, history, args.confirm_publish, action)
             path = save_plan(out_dir, plan)
             print(json.dumps({"plan_file": str(path), **plan}, ensure_ascii=False, indent=2))
             return 0
-        receipt = record_result(out_dir, history, args.status, args.note_url)
+        if args.command == "record-draft":
+            receipt = record_draft(out_dir, args.status, args.result_url)
+        else:
+            receipt = record_result(out_dir, history, args.status, args.note_url, args.result_url)
         print(json.dumps(receipt, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

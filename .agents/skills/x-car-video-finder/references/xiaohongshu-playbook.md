@@ -94,16 +94,21 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
-输出 `work/xfetch-run/xiaohongshu_publish_plan.json`，包含视频绝对路径、标题、正文、话题和 `confirm_publish`。状态为 `skipped` 时不得操作浏览器。标题超过 20 字、正文为空、话题不在 2–6 个或视频缺失时直接报错，不会进入上传环节。
+输出 `work/xfetch-run/xiaohongshu_publish_plan.json`，包含视频绝对路径、标题、正文、话题和 `action`。状态为 `skipped` 时不得操作浏览器。标题超过 20 字、正文为空、话题不在 2–6 个或视频缺失时直接报错，不会进入上传环节。
 
-只有用户在当前任务明确要求实际发布时才加：
+账号操作前先让用户预览入选表中的视频标题链接，再明确选择 **自动发布** 或 **自动保存草稿**，未选择时只生成本地计划。`publish.json` 每条必须包含 `ai_disclosure` 和 `rights_confirmed: true`，缺项不能进入发布或草稿动作。AI 生成或概念动画单独标明，授权不清不操作。
 
 ```bash
+# 自动发布
 python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan --tweet-id 2075618551918985363 --confirm-publish
+  --out work/xfetch-run plan --tweet-id 2075618551918985363 --action publish
+
+# 自动保存草稿
+python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+  --out work/xfetch-run plan --tweet-id 2075618551918985363 --action draft
 ```
 
-此参数只是授权浏览器最后一步点击“发布”，脚本本身不会操作网页或自动登记假成功。
+发布成功写入 `state/published_videos.jsonl`，草稿成功写入独立的 `state/draft_videos.jsonl`。正式发布在两条成功记录之间使用 `SystemRandom` 随机等待 60–600 秒；最后一条、草稿、跳过和失败均不等待。该间隔仅用于降低突发频率，不是规避审核的手段。
 
 ## 四、浏览器自动执行
 

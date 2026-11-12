@@ -185,7 +185,9 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
     "body": "Apollo Evo 以夸张的空气动力学造型和赛道化设计展示车身细节，适合拆解其独特的设计语言。",
     "brand": "Apollo",
     "file_topic": "Evo 空气动力学细节",
-    "topics": ["#ApolloEvo", "#超跑", "#汽车设计"]
+    "topics": ["#ApolloEvo", "#超跑", "#汽车设计"],
+    "ai_disclosure": "选题及文字由 AI 辅助整理，经人工复核。",
+    "rights_confirmed": true
   },
   "2037424381962670242": {
     "title": "Peralta S 定制超跑亮相",
@@ -217,6 +219,28 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 - 把最终入选表、淘汰表写入 `<out>/REPORT.md`，并在 stdout 输出相同表格；重复运行会更新原表格，不会重复追加，也不会重复添加编号。
 - 旧 manifest 中的媒体路径失效时，可按唯一推文 ID 找回采用旧命名的现有文件；缺少、多余推文 ID、匹配不唯一或目标文件已存在时直接报错，避免静默覆盖和图文错配。
 
+## 用户预览与发布交互
+
+完成下载、抽帧和定稿后，入选表的“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题在内置工具中预览视频；文件名和所在目录继续保留。
+
+账号操作前必须先让用户选择：**（1）自动发布（2）自动保存草稿**。未选择时只生成本地计划，不上传。选择后分别生成 `action=publish` 或 `action=draft` 的计划；`preview` 只用于预演。宿主支持结构化提问时使用其交互组件，不能交互时在回复中列出两个选项并等待用户下一条指令。
+
+`publish.json` 的每条内容必须包含 `ai_disclosure`（例如“选题及文字由 AI 辅助整理，经人工复核”）和 `rights_confirmed: true`，才能进入发布或草稿动作；缺项直接阻断。AI 生成或概念动画必须单独标明，不能用翻译或拟人化措辞规避披露。授权不清、未经人工复核的内容不得上传。
+
+```bash
+# 自动发布
+python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+  --out work/xfetch-run plan --tweet-id 原帖ID --action publish
+
+# 自动保存草稿
+python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+  --out work/xfetch-run plan --tweet-id 原帖ID --action draft
+```
+
+发布成功后写入 `state/published_videos.jsonl`；草稿成功后写入独立的 `state/draft_videos.jsonl`，草稿不得冒充已发布记录。保存草稿只能降低公开发布风险，不能消除自动运营风险。
+
+正式发布每两条之间使用 `SystemRandom` 随机等待 **60–600 秒（1–10 分钟）**，最后一条之后、草稿保存、跳过和失败时不等待。随机间隔只用于降低突发操作频率，不得宣传或用于规避平台审核。
+
 ## 小红书选题、去重与自动发布
 
 完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号承诺为“每天认识一台国内少见的车”，以关注转化而非单条点赞为目标：60% 稀有车型连续图鉴、25% 改装与机械反差、15% 视觉实验选题。按系列化潜力、前 3 秒画面、稀缺性、收藏分享、讨论空间和原帖互动评分；标题 1–20 字，正文说明车型和核心看点，话题 2–6 个。
@@ -240,7 +264,7 @@ Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小�
 
 ### 直接复用 Chrome 小红书登录态
 
-只有用户明确授权 Chrome 后才使用此路径。先为每条入选生成 `--confirm-publish` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
+只有用户明确授权 Chrome 后才使用此路径。先让用户选择发布或保存草稿，为每条入选生成对应 `action` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
 
 ```bash
 python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
@@ -267,7 +291,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。
 5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
-6. 用户要求发布小红书时，按手册生成计划并用内置浏览器执行。默认只预演；实际点击发布需要用户明确指令和 `confirm_publish=true`，成功或结果不明后才能登记历史。自动选题不等于授权实际发布。
+6. 先展示可点击的视频标题供用户预览，再让用户选择“自动发布”或“自动保存草稿”。未选择时只生成本地计划，不上传。发布或草稿动作均要求 AI 披露和版权确认；正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。自动选题不等于授权实际发布。
 7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
@@ -278,7 +302,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
 
 | # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |
 |---|---|---|---|---|---|---|---|---|
-| 1 | Apollo Evo 空气动力学细节 | Apollo Evo 以夸张的空气动力学造型和赛道化设计展示车身细节，适合拆解其独特的设计语言。 | #ApolloEvo #超跑 #汽车设计 | `1.Apollo_Evo 空气动力学细节.mp4` | `/Users/example/work/xfetch-run/videos` | 31s | 708 | [链接](https://x.com/fosgoodwood/status/2075618551918985363) |
+| 1 | [Apollo Evo 空气动力学细节](</Users/example/work/xfetch-run/videos/1.Apollo_Evo 空气动力学细节.mp4>) | Apollo Evo 以夸张的空气动力学造型和赛道化设计展示车身细节，适合拆解其独特的设计语言。 | #ApolloEvo #超跑 #汽车设计 | `1.Apollo_Evo 空气动力学细节.mp4` | `/Users/example/work/xfetch-run/videos` | 31s | 708 | [链接](https://x.com/fosgoodwood/status/2075618551918985363) |
 
 **被淘汰**（同样的列，末尾追加“淘汰原因”，如 `超时 122s` / `画面非汽车` / `画质差疑似摆拍`）：
 

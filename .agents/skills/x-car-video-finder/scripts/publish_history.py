@@ -16,13 +16,19 @@ except ImportError:
     fcntl = None
 
 DEFAULT_HISTORY_FILE = Path(__file__).resolve().parents[1] / "state" / "published_videos.jsonl"
+DEFAULT_DRAFT_HISTORY_FILE = Path(__file__).resolve().parents[1] / "state" / "draft_videos.jsonl"
 ACTIVE_STATUSES = {"published", "unconfirmed"}
-RECORD_STATUSES = ACTIVE_STATUSES | {"failed"}
+RECORD_STATUSES = ACTIVE_STATUSES | {"failed", "draft_saved", "unconfirmed_draft"}
 
 
 def default_history_path():
     value = os.environ.get("X_CAR_PUBLISH_HISTORY_FILE")
     return Path(value).expanduser().resolve() if value else DEFAULT_HISTORY_FILE
+
+
+def default_draft_history_path():
+    value = os.environ.get("X_CAR_DRAFT_HISTORY_FILE")
+    return Path(value).expanduser().resolve() if value else DEFAULT_DRAFT_HISTORY_FILE
 
 
 def normalize_title(title):
