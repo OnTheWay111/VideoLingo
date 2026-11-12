@@ -1,12 +1,12 @@
 ---
 name: x-car-video-finder
-description: 按一句提示词在 X/Twitter 上搜索汽车视频，支持按点赞量、评论数、转发数、播放量排序后取 Top N，用 yt-dlp 下载并抽帧核验。Use when the user wants to search X for car/auto videos by description, rank results by likes or comments, or batch-download X/Twitter car videos.
+description: 按一句提示词搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书选题、发布历史下载前去重，以及通过内置浏览器上传并发布视频。Use when the user wants to find X car videos, maintain a Xiaohongshu car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
 # X 汽车视频搜索与下载（x-car-video-finder）
 
-把一句自然语言提示词变成「X 检索式 → 去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 标题命名 → 报告」的完整流水线。通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
+把一句自然语言提示词变成「X 检索式 → 发布历史去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 小红书发布 → 已发布登记」的完整流水线。通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
@@ -14,6 +14,8 @@ license: MIT
 | 统一 Web 会话 | `web-content-fetcher/scripts/web_session.py` | 显式复用浏览器 Cookie 或 cookies.txt，临时 X 凭据自动清理 |
 | 下载媒体 | `yt-dlp` | X 视频自动合并成 mp4 |
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
+| 发布前去重 | `scripts/publish_history.py` | 固定 JSONL 保存唯一 ID、标题和状态；已发布或结果待确认的视频下载前跳过 |
+| 小红书发布 | `scripts/xiaohongshu_publisher.py` + 内置浏览器 | 生成计划，自动上传、填标题正文话题；显式确认后才发布并登记 |
 
 ## 前置条件
 
@@ -26,6 +28,7 @@ license: MIT
   ```
 - **yt-dlp + ffmpeg**：`which yt-dlp ffmpeg`，macOS 可用 `brew install yt-dlp ffmpeg`。
 - **X 登录态**：X 搜索必须登录，可显式复用浏览器会话、cookies.txt 或既有 xfetch 会话（见下）。
+- **小红书登录态**：使用 Kimi Code 内置浏览器打开创作者平台；未登录时由用户完成登录。无需 Playwright/Selenium，不读取个人浏览器 Cookie。
 
 ## 在 DeepSeek Harness 中被发现与 / 调用
 
@@ -118,6 +121,7 @@ python3 .../finder.py \
 | `--min-likes` | 无 | 点赞下限（服务端 `min_faves` + 本地二次过滤） |
 | `--delay` | `1.5` | 翻页间隔秒数 |
 | `--out` | `work/xfetch-run` | 输出根目录 |
+| `--publish-history` | Skill 内 `state/published_videos.jsonl` | 已发布历史；命中唯一 ID 时下载前跳过，不进入后续环节 |
 | `--auth-file` | 无 | X 专用 `KEY=VALUE` 登录态文件 |
 | `--web-session` | `off` | 显式复用指定浏览器的 Web 登录会话 |
 | `--cookies-file` | 无 | Netscape cookies.txt；可用于 X 和其他 yt-dlp 平台 |
@@ -143,9 +147,11 @@ work/xfetch-run/
 ├── rejected/            # 定稿后的淘汰 mp4（独立编号，超过时长上限/画面不符），备查
 ├── frames/              # 定稿后的抽帧 jpg（<编号>.<品牌名>_<主题名>_帧序号.jpg）
 ├── publish.json         # Agent 写入的标题、正文、品牌、文件主题和推荐话题
-├── manifest.json        # 候选、排序、标题、正文、品牌、主题、下载、抽帧和淘汰原因
-├── candidates.csv       # 全部候选（含点赞/评论/播放），可直接排序
-└── REPORT.md            # 中文报告：检索式、榜单、入选清单和淘汰清单
+├── manifest.json        # 候选、发布跳过、标题正文、下载、抽帧和淘汰原因
+├── candidates.csv       # 未发布候选（含点赞/评论/播放），可直接排序
+├── xiaohongshu_publish_plan.json     # 可选：小红书浏览器发布计划
+├── xiaohongshu_publish_receipt.json  # 可选：实际发布登记回执
+└── REPORT.md            # 中文报告：检索式、榜单、发布跳过、入选清单和淘汰清单
 ```
 
 stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），可直接粘给用户。finder 下载时的 `<uploader>_<media_id>.mp4` 只是临时文件名；交付前必须运行下面的定稿器，统一改成 `编号.品牌名_主题名`。
@@ -193,17 +199,35 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 - 把最终入选表、淘汰表写入 `<out>/REPORT.md`，并在 stdout 输出相同表格；重复运行会更新原表格，不会重复追加，也不会重复添加编号。
 - 旧 manifest 中的媒体路径失效时，可按唯一推文 ID 找回采用旧命名的现有文件；缺少、多余推文 ID、匹配不唯一或目标文件已存在时直接报错，避免静默覆盖和图文错配。
 
+## 小红书选题、去重与自动发布
+
+完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号优先采用“稀有车型图鉴 / 改装与机械细节 / 海外玩车现场”三个固定栏目，按国内稀缺性、前 3 秒画面、互动、中文表达和栏目契合评分；标题 1–20 字，正文说明车型、事件和看点，话题 2–6 个。
+
+**固定历史文件**：`.agents/skills/x-car-video-finder/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。
+
+定稿后生成默认预演计划：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+  --out work/xfetch-run plan --tweet-id 2075618551918985363
+```
+
+Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小红书创作者平台，自动上传 `video_file`、填写标题正文、逐个添加话题并核验。预演到点击“发布”前停止，不写历史。只有用户明确要求实际发布时，生成计划才加 `--confirm-publish`，浏览器才允许点击“发布”。
+
+页面明确成功后运行 `xiaohongshu_publisher.py --out work/xfetch-run record --status published`；点击后结果不明时运行 `record --status unconfirmed`，同样阻止重发，不得盲目重试。未登录、验证码和平台风控由用户处理。
+
 ## Agent 工作流（重要）
 
-1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。非汽车公众号选题或通用 URL 素材核验改用 `web-content-fetcher`，不要伪造 X 检索式。
-2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
-3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。
+1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。面向小红书时先按上述手册确定栏目和选题，不要只追求高点赞。
+2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择 X 会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
+3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。
 4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：
    - **时长**：默认上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。
-5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。确认最终视频和抽帧均采用 `编号.品牌名_主题名`，且与 `manifest.json`、报告一致。
-6. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；提醒版权与平台条款。
+5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
+6. 用户要求发布小红书时，按手册生成计划并用内置浏览器执行。默认只预演；实际点击发布需要用户明确指令和 `confirm_publish=true`，成功或结果不明后才能登记历史。
+7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
 
