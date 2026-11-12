@@ -31,6 +31,7 @@ from web_session import (
     ytdlp_session_args,
 )
 from publish_history import PublishedHistory, default_history_path
+from topic_policy import partition_forbidden_topics
 
 # 汽车内容关键词：用于剔除“标题党/非汽车”的媒体推文
 CAR_LEXICON = (
@@ -424,8 +425,9 @@ def reject_overlong_video(video, rejected_dir, max_duration):
 
 
 def write_outputs(args, prompt, queries, candidates, downloads, rejected, dropped, stats, out_dir,
-                  publish_skipped=None):
+                  publish_skipped=None, topic_skipped=None):
     publish_skipped = publish_skipped or []
+    topic_skipped = topic_skipped or []
     history_path = str(default_history_path() if not getattr(args, "publish_history", None)
                        else Path(args.publish_history).expanduser().resolve())
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -442,6 +444,7 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "downloads": downloads,
         "rejected": rejected,
         "publish_skipped": publish_skipped,
+        "topic_skipped": topic_skipped,
         "dropped_non_car_sample": [
             {"id": str(t.get("id")), "url": t.get("url"),
              "text": (t.get("text") or "")[:120]} for t in dropped[:10]
@@ -491,6 +494,13 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
             lines.append("| %s | %s | [链接](%s) | %s |" % (
                 candidate["id"], match.get("matched_by", "source_id"), candidate["url"],
                 (match.get("title") or "").replace("|", "/")))
+    if topic_skipped:
+        lines += ["", "## 小红书禁选跳过（未下载）", "",
+                  "| 唯一 ID | 原帖 | 禁选原因 |",
+                  "|---|---|---|"]
+        for item in topic_skipped:
+            lines.append("| %s | [链接](%s) | %s |" % (
+                item["candidate"]["id"], item["candidate"]["url"], item["reason"]))
     lines += ["", "## 下载清单", ""]
     if downloads:
         lines += ["| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |",
@@ -505,8 +515,8 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
                 item["candidate"]["url"]))
     elif rejected:
         lines.append("（本次下载的视频均因超时被淘汰。）")
-    elif publish_skipped:
-        lines.append("（命中的已发布视频已在下载前跳过，没有可下载的新候选。）")
+    elif publish_skipped or topic_skipped:
+        lines.append("（已发布或禁选候选均在下载前跳过；本次没有新增入选视频。）")
     else:
         lines.append("（本次未下载；加 `--top N` 或去掉 `--dry-run` 即可下载。）")
     if downloads:
@@ -548,6 +558,8 @@ def main():
     ap.add_argument("--out", default="work/xfetch-run")
     ap.add_argument("--publish-history", default=str(default_history_path()),
                     help="已发布视频 JSONL；命中唯一 ID 时在下载前跳过")
+    ap.add_argument("--xiaohongshu", action="store_true",
+                    help="启用小红书选题规则，车聚车展、车主故事和特色驾驶场景下载前跳过")
     ap.add_argument("--auth-file", default=None)
     ap.add_argument("--xfetch", default=None)
     ap.add_argument("--python", default=None)
@@ -617,10 +629,15 @@ def main():
     ranked = sort_candidates(candidates, args.sort)
     history = PublishedHistory(args.publish_history)
     ranked, publish_skipped = partition_published_candidates(ranked, history)
+    topic_skipped = []
+    if args.xiaohongshu:
+        ranked, topic_skipped = partition_forbidden_topics(ranked)
     for index, item in enumerate(ranked, 1):
         item["rank"] = index
     for item in publish_skipped:
         log("已发布，下载前跳过 %s" % item["candidate"]["url"])
+    for item in topic_skipped:
+        log("小红书禁选，下载前跳过 %s" % item["candidate"]["url"])
 
     print()
     print("## 未发布候选（按 %s 排序）" % SORT_LABELS[args.sort])
@@ -630,6 +647,7 @@ def main():
     stats = {"queries": len(queries), "candidates": len(candidates),
              "eligible_after_publish_filter": len(ranked),
              "already_published_skipped": len(publish_skipped),
+             "xiaohongshu_topic_skipped": len(topic_skipped),
              "dropped_non_car": len(dropped), "requested_top": args.top}
 
     downloads, rejected = [], []
@@ -656,10 +674,10 @@ def main():
     stats["already_published_skipped"] = len(publish_skipped)
     stats["rejected_over_duration"] = len(rejected)
     write_outputs(args, args.prompt, queries, ranked, downloads, rejected, dropped, stats, out_dir,
-                  publish_skipped)
+                  publish_skipped, topic_skipped)
 
-    print("完成：%d 条候选，%d 条已发布跳过，%d 条入选，%d 条超时淘汰。" % (
-        len(candidates), len(publish_skipped), len(downloads), len(rejected)))
+    print("完成：%d 条候选，%d 条已发布跳过，%d 条禁选跳过，%d 条入选，%d 条超时淘汰。" % (
+        len(candidates), len(publish_skipped), len(topic_skipped), len(downloads), len(rejected)))
     if downloads:
         print("视频目录: %s" % videos_dir)
         print("抽帧目录: %s（用 read_image 核验）" % frames_dir)

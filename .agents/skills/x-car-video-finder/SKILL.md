@@ -122,6 +122,7 @@ python3 .../finder.py \
 | `--delay` | `1.5` | 翻页间隔秒数 |
 | `--out` | `work/xfetch-run` | 输出根目录 |
 | `--publish-history` | Skill 内 `state/published_videos.jsonl` | 已发布历史；命中唯一 ID 时下载前跳过，不进入后续环节 |
+| `--xiaohongshu` | 关 | 小红书禁选过滤：车聚车展、车主故事、特色驾驶场景下载前跳过 |
 | `--auth-file` | 无 | X 专用 `KEY=VALUE` 登录态文件 |
 | `--web-session` | `off` | 显式复用指定浏览器的 Web 登录会话 |
 | `--cookies-file` | 无 | Netscape cookies.txt；可用于 X 和其他 yt-dlp 平台 |
@@ -163,11 +164,11 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
 ```json
 {
   "2075618551918985363": {
-    "title": "Apollo Evo 超跑亮相 Goodwood 2026",
-    "body": "Apollo Evo 在 Goodwood 2026 正式亮相，夸张的空气动力学造型和赛道化设计成为全场焦点。",
+    "title": "Apollo Evo 空气动力学细节",
+    "body": "Apollo Evo 以夸张的空气动力学造型和赛道化设计展示车身细节，适合拆解其独特的设计语言。",
     "brand": "Apollo",
-    "file_topic": "Evo 超跑亮相 Goodwood 2026",
-    "topics": ["#ApolloEvo", "#超跑", "#Goodwood2026"]
+    "file_topic": "Evo 空气动力学细节",
+    "topics": ["#ApolloEvo", "#超跑", "#汽车设计"]
   },
   "2037424381962670242": {
     "title": "Peralta S 定制超跑亮相",
@@ -201,7 +202,9 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 
 ## 小红书选题、去重与自动发布
 
-完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号优先采用“稀有车型图鉴 / 改装与机械细节 / 海外玩车现场”三个固定栏目，按国内稀缺性、前 3 秒画面、互动、中文表达和栏目契合评分；标题 1–20 字，正文说明车型、事件和看点，话题 2–6 个。
+完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号承诺为“每天认识一台国内少见的车”，以关注转化而非单条点赞为目标：60% 稀有车型连续图鉴、25% 改装与机械反差、15% 视觉实验选题。按系列化潜力、前 3 秒画面、稀缺性、收藏分享、讨论空间和原帖互动评分；标题 1–20 字，正文说明车型和核心看点，话题 2–6 个。
+
+**硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、山路/公路驾驶、驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`，禁选候选在下载前写入 `topic_skipped`；发布器会再次检查原帖文字和发布文案。
 
 **固定历史文件**：`.agents/skills/x-car-video-finder/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。
 
@@ -218,9 +221,9 @@ Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小�
 
 ## Agent 工作流（重要）
 
-1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。面向小红书时先按上述手册确定栏目和选题，不要只追求高点赞。
+1. 从提示词提取主题/车型/场景，必要时补充 2–4 组同义检索式（中英混用，X 上英文车内容远多于中文）。面向小红书时先按上述手册确定系列和关注价值，不要只追求高点赞。
 2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择 X 会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
-3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。
+3. 运行 finder（先 `--dry-run` 看榜单，确认内容对路再真下）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。面向小红书必须加 `--xiaohongshu`，禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
 4. 对下载的每条视频做两项核验，并记录每条的结果与淘汰原因：
    - **时长**：默认上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
@@ -237,7 +240,7 @@ Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小�
 
 | # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |
 |---|---|---|---|---|---|---|---|---|
-| 1 | Apollo Evo 超跑亮相 Goodwood 2026 | Apollo Evo 在 Goodwood 2026 正式亮相，夸张的空气动力学造型和赛道化设计成为全场焦点。 | #ApolloEvo #超跑 #Goodwood2026 | `1.Apollo_Evo 超跑亮相 Goodwood 2026.mp4` | `/Users/example/work/xfetch-run/videos` | 31s | 708 | [链接](https://x.com/fosgoodwood/status/2075618551918985363) |
+| 1 | Apollo Evo 空气动力学细节 | Apollo Evo 以夸张的空气动力学造型和赛道化设计展示车身细节，适合拆解其独特的设计语言。 | #ApolloEvo #超跑 #汽车设计 | `1.Apollo_Evo 空气动力学细节.mp4` | `/Users/example/work/xfetch-run/videos` | 31s | 708 | [链接](https://x.com/fosgoodwood/status/2075618551918985363) |
 
 **被淘汰**（同样的列，末尾追加“淘汰原因”，如 `超时 122s` / `画面非汽车` / `画质差疑似摆拍`）：
 

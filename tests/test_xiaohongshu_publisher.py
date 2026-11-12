@@ -98,7 +98,7 @@ def test_report_records_published_skip_without_rejected_video(tmp_path):
     assert manifest["publish_skipped"] == skipped
     assert manifest["publish_history_file"] == str(history.path)
     assert "## 已发布跳过（未下载）" in report
-    assert "没有可下载的新候选" in report
+    assert "本次没有新增入选视频" in report
 
 
 def test_dry_run_plan_cannot_be_recorded_as_published(tmp_path):
@@ -140,25 +140,28 @@ def test_plan_validates_xiaohongshu_title_length(tmp_path):
         xiaohongshu_publisher.build_plan(tmp_path, "123", history)
 
 
-def test_main_skips_published_before_invoking_download(tmp_path, monkeypatch):
+def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, monkeypatch):
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     history.add("old", "已经发布")
 
     def tweet(tweet_id, likes):
-        return {"id": tweet_id, "text": "Rare car video", "favorite_count": likes,
+        text = "Underground car meet" if tweet_id == "banned" else "Rare car video"
+        return {"id": tweet_id, "text": text, "favorite_count": likes,
                 "author": {"screen_name": "car", "name": "Car"},
                 "media": [{"type": "video", "url": "https://example.com/video"}]}
 
     out = tmp_path / "out"
     monkeypatch.setattr(sys, "argv", ["finder.py", "--prompt", "汽车", "--out", str(out),
-                                      "--publish-history", str(history.path), "--top", "1"])
+                                      "--publish-history", str(history.path), "--top", "1",
+                                      "--xiaohongshu"])
     monkeypatch.setattr(finder, "session_summary", lambda args: {})
     monkeypatch.setattr(finder, "resolve_xfetch", lambda value: "xfetch")
     monkeypatch.setattr(finder, "resolve_python", lambda value: "python")
     monkeypatch.setattr(finder, "prepare_x_auth", lambda args, env, py, xfetch: env)
     monkeypatch.setattr(finder, "auth_ok", lambda py, xfetch, env: (True, ""))
     monkeypatch.setattr(finder, "search_query",
-                        lambda *args, **kwargs: [tweet("old", 1000), tweet("new", 10)])
+                        lambda *args, **kwargs: [tweet("banned", 2000), tweet("old", 1000),
+                                                 tweet("new", 10)])
     downloaded = []
 
     def fake_download(item, videos_dir, args):
@@ -172,4 +175,24 @@ def test_main_skips_published_before_invoking_download(tmp_path, monkeypatch):
     assert downloaded == ["new"]
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["stats"]["already_published_skipped"] == 1
+    assert manifest["stats"]["xiaohongshu_topic_skipped"] == 1
     assert manifest["publish_skipped"][0]["candidate"]["id"] == "old"
+    assert manifest["topic_skipped"][0]["candidate"]["id"] == "banned"
+
+
+@pytest.mark.parametrize("text", [
+    "东京地下车聚实拍", "车主故事：他的第一台车", "山路驾驶 POV", "Goodwood Festival of Speed",
+])
+def test_publisher_rejects_forbidden_topics(text):
+    assert xiaohongshu_publisher.forbidden_topic_match({"text": text})
+
+
+def test_publisher_blocks_forbidden_topic_even_with_neutral_title(tmp_path):
+    item = finalized_output(tmp_path)
+    item["candidate"]["text"] = "Underground car meet in Tokyo"
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="禁选主题"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+    assert history.records() == []

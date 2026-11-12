@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from publish_history import PublishedHistory, default_history_path
+from topic_policy import forbidden_topic_match
 
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
 
@@ -25,6 +26,9 @@ def load_download(out_dir, tweet_id):
 
 
 def validate_content(item):
+    forbidden = forbidden_topic_match(item)
+    if forbidden:
+        raise ValueError("小红书禁选主题，禁止生成发布计划：%s" % forbidden)
     title = (item.get("title") or "").strip()
     body = (item.get("recommendation") or "").strip()
     topics = item.get("topics") or []
