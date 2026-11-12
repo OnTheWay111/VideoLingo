@@ -26,7 +26,6 @@ license: MIT
 /wechat-hot-article OpenAI Codex --article-style briefing
 /wechat-hot-article OpenAI Codex --article-style briefing --missing-materials skip
 /wechat-hot-article OpenAI Codex --visual-mode standard
-/wechat-hot-article OpenAI Codex --cookies-file ~/Downloads/cookies.txt
 /wechat-hot-article OpenAI Codex --interaction text
 ```
 
@@ -47,16 +46,13 @@ license: MIT
 | `--missing-materials ask\|skip` | `ask` | `ask`：按缺失项询问可选材料；`skip`：跳过需要人工补充的可选材料，不等待、不占位、不虚构 |
 | `--visual-mode rich\|standard\|text` | `rich` | `rich`：封面、视觉计划、配图决策、完整预览和人工式审核；`standard`：简洁排版、可选封面；`text`：用户明确选择纯文字时免封面 |
 | `--interaction auto\|text` | `auto` | `auto`：优先结构化交互，受限时回退编号选项；`text`：始终使用文字交互 |
-| `--web-session <浏览器>` | `chrome` | 默认使用已授权的 Chrome 会话；仅用户显式指定时切换 |
-| `--browser-profile <Profile>` | `Default` | 默认只使用 `Default`，不自动尝试其他 Profile |
-| `--cookies-file <路径>` | 无 | 显式提供时替代默认浏览器会话 |
 | `--out <目录>` | 自动日期目录 | 本次工作流根目录 |
 
 用户用自然语言明确说“新闻播报”“资讯播报”时，按 `--article-style briefing` 处理；明确说“缺少材料直接跳过”“不等待人工补充”时，按 `--missing-materials skip` 处理；明确说“出版级视觉”“优化封面和排版”“人工审核内容和格式”时，按 `--visual-mode rich` 处理。用户在当前任务中的明确指令优先于默认值。
 
 `--missing-materials skip` 只跳过真实经历、额外截图、补充数据等可选写作材料，不跳过主题、核心读者、核心观点、选题、文章设计和视觉设计的必经确认，也不降低事实核查或 `rich` 视觉质量标准。影响核心主张且无法核实的事实必须删除该主张、标记为待确认或放弃相关选题，不能用“跳过材料”包装成事实。
 
-本 Skill 已获得用户持续授权：默认直接读取 Chrome `Default` Profile 中的 X 登录态，不再逐次确认。授权仅限该浏览器和 Profile；用户显式提供 `--cookies-file` 或其他会话参数时，以当次指令为准。不得输出 Cookie 值，不得自动扩大凭据读取范围。macOS 系统级钥匙串提示仍由系统控制，不得绕过。
+X 登录态固定为本机 Chrome `Default` Profile。本 Skill 已获得用户持续授权，每次检索直接读取这一会话，不再逐次确认，也不提供 `--web-session`、`--browser-profile`、`--cookies-file` 或其他会话覆盖参数。调用 `web-content-fetcher` 时必须显式传入 `--web-session chrome --browser-profile Default`，不得使用 `off`、其他浏览器、其他 Profile、Cookie 文件或凭据文件替代。不得输出 Cookie 值，不得扩大凭据读取范围；macOS 系统级钥匙串提示仍由系统控制，不得绕过。只有用户后续明确修改这项固定策略时，才允许变更。
 
 不要在参数解析阶段要求用户一次性补齐观点、经历和素材。先检索，再用候选帮助用户做选择。
 
@@ -100,9 +96,9 @@ work/wechat/<YYYYMMDD>-<slug>/
 ## 阶段 1：热点检索与筛选
 
 1. 从主题提取规范主题、必要别名和 X 检索式。别名只覆盖实际产品或概念名称，不为扩大数量加入无关品牌词。
-2. 按 `web-content-fetcher` 的公开用法调用其 `scripts/web_content.py`，使用 `--topic`、必要的 `--topic-alias`、`--query`、`--limit 50 --min-wechat-score 70 --out <根目录>/fetch`。未显式指定排序时传入 `--sort heat`，同时考虑发布时间、赞、评论、转发和浏览；用户指定单项排序时保留其选择。默认同时传入 `--web-session chrome --browser-profile Default`；用户显式提供 Cookie 文件或其他会话参数时改用当次指定方式。
-3. 未验证的检索式或会话先小批量测试，通过后再扩大到 50 条；已验证时可直接抓取 50 条。
-4. 不得因需要读取默认浏览器凭据而暂停确认。默认会话失败时如实报告错误，不自动切换其他浏览器、Profile 或 Cookie 文件。
+2. 按 `web-content-fetcher` 的公开用法调用其 `scripts/web_content.py`，使用 `--topic`、必要的 `--topic-alias`、`--query`、`--limit 50 --min-wechat-score 70 --out <根目录>/fetch`。未显式指定排序时传入 `--sort heat`，同时考虑发布时间、赞、评论、转发和浏览；用户指定单项排序时保留其选择。每次必须同时传入 `--web-session chrome --browser-profile Default`，固定使用本机 Chrome `Default` 的 X 登录态，不接受其他会话覆盖参数。
+3. 未验证的检索式先小批量测试，通过后再扩大到 50 条；已验证时可直接抓取 50 条。不得因需要读取固定浏览器凭据而暂停确认。
+4. Chrome `Default` 会话失败时，如实报告错误并提示用户先在本机 Chrome `Default` 登录 X，再重试当前检索。不得改用 `--web-session off`、内置浏览器的未登录页面、其他浏览器、其他 Profile、Cookie 文件或凭据文件，也不得把公开网页搜索伪装成 X 热度检索结果。
 5. 检查 `manifest.json` 的错误、候选统计和 `heat` 配置。没有候选时如实报告失败；有候选但全部淘汰时报告“没有合适内容”，不得使用 `rejected.jsonl` 凑数。
 6. 阅读入选正文做语义复核，确认主题由正文前两句主导、新闻点或实用信息清楚；必要时复核淘汰清单纠正明显误判。`heat_score` 高不能替代语义复核或让淘汰帖入选。
 7. 综合热度只代表本次已抓取候选内的相对表现，不称为 X 全量热榜。报告候选数、入选数、淘汰数、互动数据抓取时间和热度参考日期。
