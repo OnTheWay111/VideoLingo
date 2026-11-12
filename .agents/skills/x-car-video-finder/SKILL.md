@@ -28,7 +28,7 @@ license: MIT
   ```
 - **yt-dlp + ffmpeg**：`which yt-dlp ffmpeg`，macOS 可用 `brew install yt-dlp ffmpeg`。
 - **X 登录态**：X 搜索必须登录，可显式复用浏览器会话、cookies.txt 或既有 xfetch 会话（见下）。
-- **小红书登录态**：使用 Kimi Code 内置浏览器打开创作者平台；未登录时由用户完成登录。无需 Playwright/Selenium，不读取个人浏览器 Cookie。
+- **小红书登录态**：可使用 Kimi Code 内置浏览器；用户明确授权 Chrome 时，也可用 `scripts/chrome_xiaohongshu.py` 复制 Chrome 会话到临时隔离配置并通过 CDP 发布。无需 Playwright/Selenium，默认不读取个人浏览器 Cookie，临时配置用完删除且不输出 Cookie 值。
 
 ## 在 DeepSeek Harness 中被发现与 / 调用
 
@@ -237,6 +237,22 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小红书创作者平台，自动上传 `video_file`、填写标题正文、逐个添加话题并核验。预演到点击“发布”前停止，不写历史。只有用户明确要求实际发布时，生成计划才加 `--confirm-publish`，浏览器才允许点击“发布”。
 
 页面明确成功后运行 `xiaohongshu_publisher.py --out work/xfetch-run record --status published`；点击后结果不明时运行 `record --status unconfirmed`，同样阻止重发，不得盲目重试。未登录、验证码和平台风控由用户处理。
+
+### 直接复用 Chrome 小红书登录态
+
+只有用户明确授权 Chrome 后才使用此路径。先为每条入选生成 `--confirm-publish` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+  --out work/xfetch-run --headless --preflight-only
+
+python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+  --out work/xfetch-run --headless --timeout 90
+```
+
+`chrome_xiaohongshu.py` 只复制 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，启动独立 Chrome，通过 CDP 上传和填写，使用正常 Chrome 标识，等待无障碍树中的发布按钮真正启用后发送真实鼠标事件。原 Chrome 配置和标签页不被修改，临时配置在退出时删除，Cookie 值不打印、不写入报告。可省略 `--headless` 显示隔离浏览器；`--only <原帖ID>` 只执行一条。
+
+脚本逐条检查历史，成功页明确出现后才登记 `published`。点击后结果不明时登记 `unconfirmed` 并停止后续发布。只有在后台确认实际未发布时，才可运行 `publish_history.py resolve --source-id ... --title ... --reason ...` 将误记更正为 `failed` 后重试；`failed` 不再阻止重试，最新状态优先于历史状态。
 
 ## Agent 工作流（重要）
 

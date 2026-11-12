@@ -17,6 +17,7 @@ except ImportError:
 
 DEFAULT_HISTORY_FILE = Path(__file__).resolve().parents[1] / "state" / "published_videos.jsonl"
 ACTIVE_STATUSES = {"published", "unconfirmed"}
+RECORD_STATUSES = ACTIVE_STATUSES | {"failed"}
 
 
 def default_history_path():
@@ -68,12 +69,16 @@ def match_record(records, source_id=None, title=None):
     source_id = str(source_id) if source_id is not None else ""
     normalized_title = normalize_title(title)
     for record in reversed(records):
-        if record.get("status", "published") not in ACTIVE_STATUSES:
-            continue
+        matched_by = None
         if source_id and str(record.get("source_id") or "") == source_id:
-            return {**record, "matched_by": "source_id"}
-        if normalized_title and normalize_title(record.get("title")) == normalized_title:
-            return {**record, "matched_by": "title"}
+            matched_by = "source_id"
+        elif normalized_title and normalize_title(record.get("title")) == normalized_title:
+            matched_by = "title"
+        if not matched_by:
+            continue
+        if record.get("status", "published") not in ACTIVE_STATUSES:
+            return None
+        return {**record, "matched_by": matched_by}
     return None
 
 
@@ -89,8 +94,8 @@ class PublishedHistory:
         return match_record(self.records(), source_id, title)
 
     def add(self, source_id, title, source_url="", status="published", platform="xiaohongshu", **extra):
-        if status not in ACTIVE_STATUSES:
-            raise ValueError("发布状态必须是 published 或 unconfirmed")
+        if status not in RECORD_STATUSES:
+            raise ValueError("发布状态必须是 published、unconfirmed 或 failed")
         if not str(source_id or "").strip() and not normalize_title(title):
             raise ValueError("source_id 和 title 至少填写一项")
         record = {
@@ -127,6 +132,10 @@ def main(argv=None):
             command.add_argument("--status", choices=sorted(ACTIVE_STATUSES), default="published")
             command.add_argument("--note-url", default="")
     commands.add_parser("list")
+    resolve = commands.add_parser("resolve", help="后台确认未发布后，将待确认记录更正为 failed")
+    resolve.add_argument("--source-id", required=True)
+    resolve.add_argument("--title", required=True)
+    resolve.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
     history = PublishedHistory(args.history_file)
     try:
@@ -137,6 +146,14 @@ def main(argv=None):
             match = history.check(args.source_id, args.title)
             print(json.dumps({"published": bool(match), "match": match}, ensure_ascii=False, indent=2))
             return 1 if match else 0
+        if args.command == "resolve":
+            match = history.check(args.source_id, args.title)
+            if not match or match.get("status") != "unconfirmed":
+                raise ValueError("只有 unconfirmed 记录可以更正为 failed")
+            record = history.add(args.source_id, args.title, match.get("source_url", ""),
+                                 "failed", resolution_reason=args.reason)
+            print(json.dumps(record, ensure_ascii=False, indent=2))
+            return 0
         record = history.add(args.source_id, args.title, args.source_url, args.status, note_url=args.note_url)
         print(json.dumps(record, ensure_ascii=False, indent=2))
         return 0

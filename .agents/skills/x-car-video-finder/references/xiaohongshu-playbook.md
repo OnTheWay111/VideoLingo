@@ -105,7 +105,7 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 
 此参数只是授权浏览器最后一步点击“发布”，脚本本身不会操作网页或自动登记假成功。
 
-## 四、Kimi Code 内置浏览器自动执行
+## 四、浏览器自动执行
 
 Agent 读取发布计划后，调用 `mcp__desktop_browser__run` 完成以下动作；不需要 Playwright、Selenium 或读取个人浏览器 Cookie：
 
@@ -130,6 +130,31 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 ```
 
 `record` 会拒绝预演计划，只有带 `confirm_publish=true` 的计划才能写入历史。回执保存在 `<out>/xiaohongshu_publish_receipt.json`，历史文件才是后续去重的权威依据。
+
+### 用户明确授权的 Chrome 会话
+
+把各条确认计划保存为 `<out>/plans_confirmed/<原帖ID>.json`，然后使用：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+  --out work/xfetch-run --headless --preflight-only
+
+python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+  --out work/xfetch-run --headless --timeout 90
+```
+
+该脚本在 macOS 上只复制 Chrome 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，使用 `websocket-client` 通过 CDP 操作独立 Chrome；不会修改原浏览器配置或标签页，退出时删除临时配置，不输出 Cookie 值。`--browser-profile` 默认 `Default`，`--only` 可限制为一条，去掉 `--headless` 可显示浏览器。
+
+脚本使用正常 Chrome 标识避免降级页面，通过无障碍树等待发布按钮真正启用，再按节点位置发送真实鼠标事件。标题、正文和话题填写后保存发布前截图，成功或待确认时保存结果截图到 `<out>/browser/`。批量发布逐条检查历史，任何待确认或错误都会停止后续项。
+
+如果点击后结果不确定，历史先记 `unconfirmed`。必须到创作者后台确认实际未发布后，才能用以下命令更正为 `failed` 并重试；不得仅因超时就强行解锁：
+
+```bash
+python3 .agents/skills/x-car-video-finder/scripts/publish_history.py resolve \
+  --source-id 2075618551918985363 \
+  --title "实际未发布的标题" \
+  --reason "后台确认未发布的核验依据"
+```
 
 ## 五、边界与安全
 
