@@ -30,7 +30,7 @@
 
 默认互动下载门槛为转发 ≥100 且点赞 ≥1000，任一指标不足都不下载，并写入 `engagement_skipped`、统计和报告。可用 `--min-reposts` 与 `--min-likes` 调整，显式设为 0 可关闭对应限制；达到互动门槛只代表允许下载，仍须通过禁选、抽帧和评分核验。
 
-每次计划包含栏目、系列、期数、推荐成片时长、三组英文检索式、禁选排除词、100 分评分维度、70 分阈值以及近期标题和品牌。互动量排序只负责候选预筛；Agent 必须结合原帖和抽帧完成评分、系列相关性及近期车型重复检查，最终入选不足时递补候选。抽帧核验必须为每条记录写入 `verification.presentation`：纯车辆细节或山路驾驶画面为 `car_only`，真人讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`；后两类直接淘汰，不参与评分放行。定稿器据此自动移入淘汰清单，发布器再次阻断。自动选题不授权自动点击发布，版权不清、未标明的 AI/概念画面和其他硬性禁选项仍直接淘汰。
+每次计划包含栏目、系列、期数、推荐成片时长、三组英文检索式、禁选排除词、100 分评分维度、70 分阈值以及近期标题和品牌。互动量排序只负责候选预筛；Agent 必须结合原帖和抽帧完成评分、系列相关性及近期车型重复检查，最终入选不足时递补候选。抽帧核验必须为每条记录写入 `verification.presentation`：纯车辆细节或山路驾驶画面为 `car_only`，真人讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`；后两类直接淘汰，不参与评分放行。定稿器据此自动移入淘汰清单，发布器再次阻断。合格素材定稿后直接自动发布，版权不清、未标明的 AI/概念画面和其他硬性禁选项仍直接淘汰。
 
 ### 100 分选题模型
 
@@ -92,34 +92,24 @@ python3 .agents/skills/xcar-xhs/scripts/publish_history.py check \
 
 ## 三、生成小红书发布计划
 
-必须先完成 `finalize.py`，确保入选记录已有标题、正文、话题和最终视频路径。默认只生成预演计划，不发布：
+必须先完成 `finalize.py`，确保入选记录已有标题、正文、话题和最终视频路径。随后为每条合格视频生成默认发布计划，不等待人工确认：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
-输出 `work/xfetch-run/xiaohongshu_publish_plan.json`，包含视频绝对路径、标题、正文、话题和 `action`。状态为 `skipped` 时不得操作浏览器。标题超过 20 字、正文为空、话题不在 2–6 个或视频缺失时直接报错，不会进入上传环节。
+输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/2075618551918985363.json`，包含视频绝对路径、标题、正文、话题和 `action=publish`。状态为 `skipped` 时不得操作浏览器。标题超过 20 字、正文为空、话题不在 2–6 个或视频缺失时直接报错，不会进入上传环节。
 
-账号操作前先让用户预览入选表中的视频标题链接，再明确选择 **自动发布** 或 **自动保存草稿**，未选择时只生成本地计划。`publish.json` 每条必须包含 `ai_disclosure` 和 `rights_confirmed: true`，缺项不能进入发布或草稿动作。AI 生成或概念动画单独标明，授权不清不操作。
+`publish.json` 每条必须包含 `ai_disclosure`，缺项不能进入发布或显式草稿动作；不再需要 `rights_confirmed`。AI 生成或概念动画单独标明，授权不清在筛选阶段直接淘汰，不增加二次授权确认。只有用户明确要求时才使用 `--action preview` 或 `--action draft`，正常流水线默认 `--action publish`，无需显式传参。
 
-```bash
-# 自动发布
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan --tweet-id 2075618551918985363 --action publish
-
-# 自动保存草稿
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan --tweet-id 2075618551918985363 --action draft
-```
-
-发布成功写入 `state/published_videos.jsonl`，草稿成功写入独立的 `state/draft_videos.jsonl`。正式发布在两条成功记录之间使用 `SystemRandom` 随机等待 60–600 秒；最后一条、草稿、跳过和失败均不等待。该间隔仅用于降低突发频率，不是规避审核的手段。
+发布成功写入 `state/published_videos.jsonl`，显式草稿成功写入独立的 `state/draft_videos.jsonl`。正式发布在两条成功记录之间使用 `SystemRandom` 随机等待 60–600 秒；最后一条、草稿、跳过和失败均不等待。该间隔仅用于降低突发频率，不是规避审核的手段。
 
 ## 四、Chrome Default 浏览器自动执行
 
-小红书登录态固定复用本机 Chrome `Default`。Agent 不再使用内置浏览器，也不再询问浏览器或 Profile；发布或保存草稿仍需用户事先选择。
+小红书登录态固定复用本机 Chrome `Default`。Agent 不再使用内置浏览器，也不再询问浏览器、Profile、是否发布或是否二次授权。
 
-把各条确认计划保存为 `<out>/plans_confirmed/<原帖ID>.json`，然后先验证会话，再逐条执行：
+计划生成器已把各条可执行计划保存为 `<out>/plans/<原帖ID>.json`，然后先验证会话，再逐条直接执行：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
@@ -136,8 +126,8 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
 1. 直接打开 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`，不经过创作者首页或菜单跳转。若出现短信登录页，让用户在本机 Chrome `Default` 完成登录，不能代替用户接收或猜测验证码。
 2. 上传计划里的 `video_file`，等待编辑页出现并确认上传完成，不能在上传进行中点击发布。
 3. 填入 `title` 与 `body`，逐个添加 `topics`，再复读标题、正文和话题，核对没有串行、重复或误选。
-4. 若 `confirm_publish=false`，在点击“发布”前停止，不写历史。
-5. 若 `confirm_publish=true` 且用户已明确要求发布，通过无障碍树等待发布按钮启用，再发送真实鼠标事件。只有页面出现明确成功状态才登记 `published`，不能用“按钮已点击”代替成功。
+4. 默认 `action=publish` 的计划不再检查 `confirm_publish`，也不等待人工确认。
+5. 通过无障碍树等待发布按钮启用，再发送真实鼠标事件。只有页面出现明确成功状态才登记 `published`，不能用“按钮已点击”代替成功。
 
 脚本使用正常 Chrome 标识避免降级页面，并保存发布前、成功或异常截图到 `<out>/browser/`。批量按 manifest 入选顺序逐条执行，任何待确认或错误都会停止后续项。点击后结果不明时登记 `unconfirmed` 阻止重复发布，由用户到创作者后台核对，不得盲目重试。`result_url` 是发布结果页，`note_url` 只能是公开笔记地址，二者不得混用。
 
@@ -157,4 +147,4 @@ python3 .agents/skills/xcar-xhs/scripts/publish_history.py resolve \
 - 这是 Agent 驱动的浏览器自动化，不是无人值守的定时发布服务；登录、平台验证码和风控仍需用户处理。
 - 页面文案或结构变化时重新读取元素快照，不要盲点固定坐标。
 - 每次只发布一个计划；批量任务必须逐条生成计划、核验和登记，不能并发点击发布。
-- 素材授权、平台规则、原创声明和转载设置由发布者确认。版权不清时不发布。
+- 素材授权、平台规则、原创声明和转载设置必须符合条件；授权或版权不清的素材在筛选阶段直接淘汰，不通过二次人工确认放行。

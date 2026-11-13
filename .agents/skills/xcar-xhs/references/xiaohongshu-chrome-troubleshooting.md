@@ -58,7 +58,7 @@
 
 ## 四、发布前检查清单
 
-- 当前计划为 `ready`，且用户明确要求实际发布，`confirm_publish=true`。
+- 当前计划为 `ready` 且 `action=publish`；合格素材默认直接发布，不要求 `confirm_publish` 或人工确认。
 - 视频文件存在，标题、正文、话题与计划一致。
 - 历史中没有该 `source_id` 或标题的有效记录。
 - Chrome 登录态和上传页验证通过，Cookie 值未输出。

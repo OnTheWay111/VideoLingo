@@ -63,19 +63,19 @@ def test_copy_profile_only_copies_session_files(tmp_path):
     assert not (target / "Default" / "History").exists()
 
 
-def test_load_plans_requires_confirmation_and_real_video(tmp_path):
-    plans = tmp_path / "plans_confirmed"
+def test_load_plans_accepts_publish_action_without_confirmation(tmp_path):
+    plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
-    plan = {"status": "ready", "confirm_publish": True, "video_file": str(video)}
+    plan = {"status": "ready", "action": "publish", "video_file": str(video)}
     (plans / "123.json").write_text(json.dumps(plan))
 
     assert chrome.load_plans(tmp_path)[0]["video_file"] == str(video)
 
-    plan["confirm_publish"] = False
+    plan["action"] = "preview"
     (plans / "123.json").write_text(json.dumps(plan))
-    with pytest.raises(ValueError, match="确认"):
+    with pytest.raises(ValueError, match="发布或草稿动作"):
         chrome.load_plans(tmp_path)
 
 
@@ -140,13 +140,13 @@ def test_copy_profile_honors_source_profile(tmp_path):
 
 
 def test_load_plans_uses_manifest_download_order(tmp_path):
-    plans = tmp_path / "plans_confirmed"
+    plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
     for source_id in ("200", "100"):
         (plans / ("%s.json" % source_id)).write_text(json.dumps({
-            "status": "ready", "confirm_publish": True, "video_file": str(video),
+            "status": "ready", "action": "publish", "video_file": str(video),
             "source_id": source_id,
         }))
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [
@@ -207,12 +207,12 @@ def test_random_delay_is_between_one_and_ten_minutes():
 
 
 def test_load_plans_accepts_draft_action(tmp_path):
-    plans = tmp_path / "plans_confirmed"
+    plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
     (plans / "123.json").write_text(json.dumps({
-        "status": "ready", "action": "draft", "confirm_publish": False,
+        "status": "ready", "action": "draft",
         "video_file": str(video), "source_id": "123", "title": "草稿标题",
     }))
 
@@ -220,13 +220,13 @@ def test_load_plans_accepts_draft_action(tmp_path):
 
 
 def test_random_delay_only_occurs_between_successful_publications(tmp_path, monkeypatch):
-    plans = tmp_path / "plans_confirmed"
+    plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
     for source_id in ("100", "200"):
         (plans / ("%s.json" % source_id)).write_text(json.dumps({
-            "status": "ready", "action": "publish", "confirm_publish": True,
+            "status": "ready", "action": "publish",
             "video_file": str(video), "source_id": source_id, "title": source_id,
         }))
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [

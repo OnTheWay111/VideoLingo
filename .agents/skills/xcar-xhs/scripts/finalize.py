@@ -69,7 +69,6 @@ def load_publish(path):
             "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
             "ai_disclosure": str(item.get("ai_disclosure") or "").strip(),
-            "rights_confirmed": item.get("rights_confirmed") is True,
         }
     return result
 
@@ -212,7 +211,6 @@ def finalize(out_dir, publish_file):
             item["file_topic"] = content["file_topic"]
             item["topics"] = content["topics"]
             item["ai_disclosure"] = content["ai_disclosure"]
-            item["rights_confirmed"] = content["rights_confirmed"]
 
     for group_name in ("downloads", "rejected"):
         if manifest.get(group_name):

@@ -42,8 +42,7 @@ def finalized_output(tmp_path, tweet_id="123", title="罕见跑车亮相"):
         "title": title,
         "recommendation": "这台罕见跑车在海外活动中亮相，展示独特的车身设计。",
         "topics": ["#罕见车型", "#汽车文化"],
-        "ai_disclosure": "选题及文字由 AI 辅助整理，经人工复核。",
-        "rights_confirmed": True,
+        "ai_disclosure": "选题、素材初筛及文字由 AI 辅助整理。",
     }
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     return item
@@ -103,7 +102,7 @@ def test_report_records_published_skip_without_rejected_video(tmp_path):
     assert "本次没有新增入选视频" in report
 
 
-def test_dry_run_plan_cannot_be_recorded_as_published(tmp_path):
+def test_default_plan_publishes_without_additional_confirmation(tmp_path):
     finalized_output(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
 
@@ -111,19 +110,49 @@ def test_dry_run_plan_cannot_be_recorded_as_published(tmp_path):
     xiaohongshu_publisher.save_plan(tmp_path, plan)
 
     assert plan["status"] == "ready"
-    assert plan["confirm_publish"] is False
+    assert plan["action"] == "publish"
+    assert plan["browser_actions"][-1] == "publish"
+    assert "confirm_publish" not in plan
+    assert "rights_confirmed" not in plan
     assert plan["publish_url"] == (
         "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video")
     assert Path(plan["video_file"]).is_file()
-    with pytest.raises(ValueError, match="预演计划"):
+    assert (tmp_path / "plans" / "123.json").is_file()
+
+
+def test_cli_defaults_to_publish_without_confirmation_flag(tmp_path, capsys):
+    finalized_output(tmp_path)
+
+    result = xiaohongshu_publisher.main([
+        "--out", str(tmp_path), "--history-file", str(tmp_path / "published.jsonl"),
+        "plan", "--tweet-id", "123",
+    ])
+
+    output = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert output["action"] == "publish"
+    assert (tmp_path / "plans" / "123.json").is_file()
+
+
+def test_preview_plan_cannot_be_recorded_as_published(tmp_path):
+    finalized_output(tmp_path)
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="preview")
+    stale_plan = tmp_path / "plans" / "123.json"
+    stale_plan.parent.mkdir()
+    stale_plan.write_text("{}")
+    xiaohongshu_publisher.save_plan(tmp_path, plan)
+
+    with pytest.raises(ValueError, match="publish 计划"):
         xiaohongshu_publisher.record_result(tmp_path, history)
     assert history.records() == []
+    assert not stale_plan.exists()
 
 
 def test_successful_record_blocks_future_plan(tmp_path):
     finalized_output(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
-    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, confirm_publish=True)
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
     xiaohongshu_publisher.save_plan(tmp_path, plan)
 
     receipt = xiaohongshu_publisher.record_result(
@@ -233,7 +262,7 @@ def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
         "topic_plan": topic_plan,
     }, ensure_ascii=False))
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
-    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, confirm_publish=True)
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
     xiaohongshu_publisher.save_plan(tmp_path, plan)
 
     xiaohongshu_publisher.record_result(tmp_path, history)
@@ -255,7 +284,6 @@ def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
     drafts = publish_history.PublishedHistory(tmp_path / "drafts.jsonl")
 
     assert plan["action"] == "draft"
-    assert plan["confirm_publish"] is False
     assert "AI 辅助整理" in plan["full_text"]
     receipt = xiaohongshu_publisher.record_draft(tmp_path, draft_history=drafts)
 
@@ -264,20 +292,15 @@ def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
     assert history.records() == []
 
 
-def test_publish_and_draft_require_disclosure_and_rights(tmp_path):
+@pytest.mark.parametrize("action", ["publish", "draft"])
+def test_publish_and_draft_require_disclosure(tmp_path, action):
     item = finalized_output(tmp_path)
     item["ai_disclosure"] = ""
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
 
     with pytest.raises(ValueError, match="ai_disclosure"):
-        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="publish")
-
-    item["ai_disclosure"] = "AI 辅助整理"
-    item["rights_confirmed"] = False
-    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
-    with pytest.raises(ValueError, match="rights_confirmed"):
-        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="draft")
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action=action)
 
 
 def test_publisher_blocks_visual_talking_head_with_neutral_text(tmp_path):

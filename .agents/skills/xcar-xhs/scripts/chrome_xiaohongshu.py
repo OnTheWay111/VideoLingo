@@ -367,7 +367,7 @@ class ChromeSession:
 
 def load_plans(out_dir, only=None):
     out_dir = Path(out_dir)
-    plans_dir = out_dir / "plans_confirmed"
+    plans_dir = out_dir / "plans"
     if only:
         paths = [plans_dir / ("%s.json" % only)]
     else:
@@ -380,16 +380,13 @@ def load_plans(out_dir, only=None):
         included = {path.name for path in paths}
         paths.extend(path for path in sorted(plans_dir.glob("*.json")) if path.name not in included)
     if not paths or any(not path.is_file() for path in paths):
-        raise ValueError("找不到确认发布计划")
+        raise ValueError("找不到发布计划")
     plans = []
     for path in paths:
         plan = json.loads(path.read_text())
-        action = plan.get("action") or ("publish" if plan.get("confirm_publish") else "preview")
+        action = plan.get("action")
         if plan.get("status") != "ready" or action not in ("publish", "draft"):
-            raise ValueError("计划未获得发布或草稿确认：%s" % path)
-        if action == "publish" and not plan.get("confirm_publish"):
-            raise ValueError("发布计划缺少 confirm_publish：%s" % path)
-        plan["action"] = action
+            raise ValueError("计划必须明确使用发布或草稿动作：%s" % path)
         if not Path(plan["video_file"]).is_file():
             raise ValueError("计划视频不存在：%s" % plan["video_file"])
         plans.append(plan)

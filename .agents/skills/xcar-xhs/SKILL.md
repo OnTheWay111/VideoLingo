@@ -15,7 +15,7 @@ license: MIT
 | 下载媒体 | `yt-dlp` | 使用同一 Chrome `Default` 会话，X 视频自动合并成 mp4 |
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
 | 发布前去重 | `scripts/publish_history.py` | 固定 JSONL 保存唯一 ID、标题和状态；已发布或结果待确认的视频下载前跳过 |
-| 小红书发布 | `scripts/xiaohongshu_publisher.py` + `scripts/chrome_xiaohongshu.py` | 固定复用 Chrome `Default`，自动上传、填标题正文话题；显式确认后才发布并登记 |
+| 小红书发布 | `scripts/xiaohongshu_publisher.py` + `scripts/chrome_xiaohongshu.py` | 固定复用 Chrome `Default`，合格素材定稿后直接自动发布并登记，无人工确认环节 |
 
 ## 前置条件
 
@@ -166,7 +166,8 @@ work/xfetch-run/
 ├── topic_plan.json      # 自动模式：栏目、系列期数、检索式、评分维度和近期避开项
 ├── manifest.json        # 选题计划、候选、发布/互动跳过、标题正文、下载、抽帧和淘汰原因
 ├── candidates.csv       # 未发布候选（含点赞/评论/播放），可直接排序
-├── xiaohongshu_publish_plan.json     # 可选：小红书浏览器发布计划
+├── xiaohongshu_publish_plan.json     # 最近一条小红书发布计划
+├── plans/               # 各入选视频的可执行发布计划，无需人工确认
 ├── xiaohongshu_publish_receipt.json  # 可选：实际发布登记回执
 └── REPORT.md            # 中文报告：检索式、榜单、发布跳过、入选清单和淘汰清单
 ```
@@ -185,15 +186,15 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
     "brand": "Apollo",
     "file_topic": "Evo 空气动力学细节",
     "topics": ["#ApolloEvo", "#超跑", "#汽车设计"],
-    "ai_disclosure": "选题及文字由 AI 辅助整理，经人工复核。",
-    "rights_confirmed": true
+    "ai_disclosure": "选题、素材初筛及文字由 AI 辅助整理。"
   },
   "2037424381962670242": {
     "title": "Peralta S 定制超跑亮相",
     "body": "Peralta S 以定制化车身和复古超跑造型登场，展示了独特的设计细节。",
     "brand": "Peralta",
     "file_topic": "S 定制超跑亮相",
-    "topics": ["#PeraltaS", "#定制超跑", "#汽车设计"]
+    "topics": ["#PeraltaS", "#定制超跑", "#汽车设计"],
+    "ai_disclosure": "选题、素材初筛及文字由 AI 辅助整理。"
   }
 }
 ```
@@ -219,27 +220,27 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
 - 把最终入选表、淘汰表写入 `<out>/REPORT.md`，并在 stdout 输出相同表格；重复运行会更新原表格，不会重复追加，也不会重复添加编号。
 - 旧 manifest 中的媒体路径失效时，可按唯一推文 ID 找回采用旧命名的现有文件；缺少、多余推文 ID、匹配不唯一或目标文件已存在时直接报错，避免静默覆盖和图文错配。
 
-## 用户预览与发布交互
+## 自动发布与结果预览
 
-完成下载、抽帧和定稿后，入选表的“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题在内置工具中预览视频；文件名和所在目录继续保留。
+完成下载、抽帧和定稿后，**不得再询问是否发布，也不得要求二次授权确认**。为每条合格视频生成默认 `action=publish` 的计划，随即按下方 Chrome 流程自动发布。只有用户明确要求预演或保存草稿时，才使用 `preview` 或 `draft`；正常流水线不得提供选项后等待回复。
 
-账号操作前必须先让用户选择：**（1）自动发布（2）自动保存草稿**。未选择时只生成本地计划，不上传。选择后分别生成 `action=publish` 或 `action=draft` 的计划；`preview` 只用于预演。宿主支持结构化提问时使用其交互组件，不能交互时在回复中列出两个选项并等待用户下一条指令。
-
-`publish.json` 的每条内容必须包含 `ai_disclosure`（例如“选题及文字由 AI 辅助整理，经人工复核”）和 `rights_confirmed: true`，才能进入发布或草稿动作；缺项直接阻断。AI 生成或概念动画必须单独标明，不能用翻译或拟人化措辞规避披露。授权不清、未经人工复核的内容不得上传。
+`publish.json` 的每条内容必须包含 `ai_disclosure`（例如“选题、素材初筛及文字由 AI 辅助整理”），缺项直接阻断；不再需要 `rights_confirmed` 字段。AI 生成或概念动画必须单独标明，不能用翻译或拟人化措辞规避披露。授权不清的内容在筛选阶段直接淘汰，不通过额外人工确认放行。
 
 ```bash
-# 自动发布
+# 默认直接发布，无需 --action 或确认参数
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan --tweet-id 原帖ID --action publish
+  --out work/xfetch-run plan --tweet-id 原帖ID
 
-# 自动保存草稿
+# 仅用户明确要求时保存草稿
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 原帖ID --action draft
 ```
 
-发布成功后写入 `state/published_videos.jsonl`；草稿成功后写入独立的 `state/draft_videos.jsonl`，草稿不得冒充已发布记录。保存草稿只能降低公开发布风险，不能消除自动运营风险。
+计划生成器同时写入 `<out>/xiaohongshu_publish_plan.json` 和 `<out>/plans/<原帖ID>.json`，后者供 Chrome 批量执行。发布成功后写入 `state/published_videos.jsonl`；用户明确要求草稿时，成功结果写入独立的 `state/draft_videos.jsonl`，草稿不得冒充已发布记录。
 
 正式发布每两条之间使用 `SystemRandom` 随机等待 **60–600 秒（1–10 分钟）**，最后一条之后、草稿保存、跳过和失败时不等待。随机间隔只用于降低突发操作频率，不得宣传或用于规避平台审核。
+
+完成后的入选表“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题在内置工具中预览已发布视频；文件名和所在目录继续保留。预览是结果交付，不是发布前的等待环节。
 
 ## 小红书选题、去重与自动发布
 
@@ -251,18 +252,18 @@ python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
 
 **固定历史文件**：`.agents/skills/xcar-xhs/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。自动模式的实际发布登记会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、品牌和文件主题，供下一次轮动；预演和搜索不消耗期数。
 
-定稿后生成默认预演计划：
+定稿后为每条入选视频生成默认发布计划：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
-`<out>/xiaohongshu_publish_plan.json` 只用于本地核对，不使用内置浏览器获取登录态，也不上传或写历史。实际执行固定走下方 Chrome `Default` 路径；只有用户明确选择发布或保存草稿后，才生成对应确认计划。
+计划命令本身不操作网页；它生成 `action=publish` 的 `<out>/xiaohongshu_publish_plan.json`，并自动保存到 `<out>/plans/<原帖ID>.json`。随后必须继续执行下方 Chrome 发布流程，不能停在计划阶段等待人工确认。
 
 ### 固定复用 Chrome Default 小红书登录态
 
-先让用户选择发布或保存草稿，为每条入选生成对应 `action` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
+为每条入选生成默认发布计划后，直接验证会话并逐条发布：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
@@ -291,8 +292,8 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。每条必须写入 `verification.presentation`：纯车辆细节或山路驾驶画面为 `car_only`，真人出镜或人物分屏讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`。后两类即使车辆清晰、原帖高赞或评分达到 70 分也必须淘汰。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。运行 `finalize.py` 时会根据画面标注和明显讲解文字自动完成讲解视频的移动与淘汰记录，不能只把分数调低后仍留在入选清单。
 5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
-6. 先展示可点击的视频标题供用户预览，再让用户选择“自动发布”或“自动保存草稿”。未选择时只生成本地计划，不上传。执行时固定复用 Chrome `Default` 的小红书登录态；发布或草稿动作均要求 AI 披露和版权确认，正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。自动选题不等于授权实际发布。
-7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
+6. 定稿后立即为每条合格视频生成默认 `publish` 计划，固定复用 Chrome `Default` 的小红书登录态，先 preflight 再直接发布；不得询问“自动发布/自动保存草稿”，不得要求 `rights_confirmed` 或其他二次授权确认。发布和显式草稿动作均要求 AI 披露，授权不清素材已在筛选阶段淘汰。正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。
+7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。入选标题链接用于发布后预览，不作为发布前确认。提醒版权与平台条款，并附发布状态、笔记 URL（如有）和历史文件路径。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
 
@@ -317,4 +318,4 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
 - 登录态只在本机使用；自动创建的临时 X 会话随进程清理，手动创建的 `/tmp/xfetch-auth.env` 用完即删，任何 Cookie 文件都不要提交进仓库。
 - X 有频率限制：默认 `--delay 1.5` 不要调太小；大批量建议分多次、`--limit` 别贪大（单次 20–40/组足够）。其他平台也应控制并发和频率。
 - `min_replies` 等操作符能否被 X 接受未实测；评论数排序请依赖本地 `--sort replies`。
-- 下载内容版权归原作者，二次创作/商用需自行确认授权，遵守对应平台条款；只能拉取当前账号有权访问的内容。
+- 下载内容版权归原作者，二次创作/商用必须符合素材授权与对应平台条款；授权不清的素材直接淘汰，只能拉取当前账号有权访问的内容。
