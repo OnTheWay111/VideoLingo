@@ -148,9 +148,10 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     history.add("old", "已经发布")
 
-    def tweet(tweet_id, likes):
+    def tweet(tweet_id, likes, reposts=100):
         text = "Underground car meet" if tweet_id == "banned" else "Rare car video"
         return {"id": tweet_id, "text": text, "favorite_count": likes,
+                "retweet_count": reposts,
                 "author": {"screen_name": "car", "name": "Car"},
                 "media": [{"type": "video", "url": "https://example.com/video"}]}
 
@@ -165,7 +166,8 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
     monkeypatch.setattr(finder, "auth_ok", lambda py, xfetch, env: (True, ""))
     monkeypatch.setattr(finder, "search_query",
                         lambda *args, **kwargs: [tweet("banned", 2000), tweet("old", 1000),
-                                                 tweet("new", 10)])
+                                                 tweet("new", 2000), tweet("low-reposts", 5000, 99),
+                                                 tweet("low-likes", 999, 1000)])
     downloaded = []
 
     def fake_download(item, videos_dir, args):
@@ -179,9 +181,14 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
     assert downloaded == ["new"]
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["stats"]["already_published_skipped"] == 1
+    assert manifest["stats"]["engagement_skipped"] == 2
     assert manifest["stats"]["xiaohongshu_topic_skipped"] == 1
     assert manifest["publish_skipped"][0]["candidate"]["id"] == "old"
     assert manifest["topic_skipped"][0]["candidate"]["id"] == "banned"
+    assert {item["candidate"]["id"] for item in manifest["engagement_skipped"]} == {
+        "low-reposts", "low-likes",
+    }
+    assert "## 互动不足跳过（未下载）" in (out / "REPORT.md").read_text()
 
 
 @pytest.mark.parametrize("text", [

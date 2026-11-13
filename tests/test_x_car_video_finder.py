@@ -23,6 +23,8 @@ def test_finder_defaults_to_chrome_default_for_x_and_downloads():
     assert "默认 Default" in parser.format_help()
     assert args.web_session == "chrome"
     assert args.browser_profile == "Default"
+    assert args.min_likes == 1000
+    assert args.min_reposts == 100
     assert finder.session_summary(args) == {
         "mode": "browser", "browser": "chrome", "profile": "Default",
         "cookies_file": None,
@@ -334,6 +336,7 @@ def test_auto_topic_main_runs_without_prompt_and_saves_plan(tmp_path, monkeypatc
             "id": "auto-1",
             "text": "Honda Beat kei car design details",
             "favorite_count": 100,
+            "retweet_count": 100,
             "author": {"screen_name": "car", "name": "Car"},
             "media": [{"type": "video", "url": "https://example.com/video"}],
         }]
@@ -413,3 +416,24 @@ def test_finalize_rejects_cappuccino_talking_head_sample(tmp_path):
     assert Path(rejected["video"]["file"]).is_file()
     assert not original_video.exists()
     assert "讲解视频禁选" in (tmp_path / "REPORT.md").read_text()
+
+
+def test_engagement_download_thresholds_are_inclusive_and_independent():
+    boundary = publish_candidate("boundary")
+    boundary.update({"likes": 1000, "reposts": 100})
+    low_likes = publish_candidate("low-likes")
+    low_likes.update({"likes": 999, "reposts": 1000})
+    low_reposts = publish_candidate("low-reposts")
+    low_reposts.update({"likes": 5000, "reposts": 99})
+
+    allowed, skipped = finder.partition_engagement_candidates(
+        [boundary, low_likes, low_reposts], 1000, 100)
+
+    assert [item["id"] for item in allowed] == ["boundary"]
+    assert {item["candidate"]["id"] for item in skipped} == {"low-likes", "low-reposts"}
+    assert "点赞 999 < 1000" in skipped[0]["reason"]
+    assert "转发 99 < 100" in skipped[1]["reason"]
+
+    allowed, skipped = finder.partition_engagement_candidates([low_likes, low_reposts], 0, 0)
+    assert len(allowed) == 2
+    assert skipped == []

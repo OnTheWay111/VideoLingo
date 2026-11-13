@@ -116,7 +116,7 @@ python3 .../finder.py \
 | `reposts` | `retweet_count` | 按转发数降序 |
 | `views` | `view_count` | 按播放量降序 |
 
-服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。自动模式下互动排序只是候选预筛，Agent 仍须按 100 分模型评分，只让核验后达到 70 分的素材进入最终入选。
+服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。默认下载门槛为转发 ≥100 且点赞 ≥1000，任一不足都会在下载前跳过并写入 `engagement_skipped`；`--min-reposts` 使用本地精确过滤，不依赖未实测的 X 查询操作符。自动模式下互动排序只是候选预筛，Agent 仍须按 100 分模型评分，只让核验后达到 70 分的素材进入最终入选。
 
 ## 选项
 
@@ -132,7 +132,8 @@ python3 .../finder.py \
 | `--pages` | `1` | 每组翻页数（>1 时自动带 cursor） |
 | `--type` | `top` | `top` / `latest` / `media` |
 | `--since` | 无 | 只搜此日期之后 |
-| `--min-likes` | 无 | 点赞下限（服务端 `min_faves` + 本地二次过滤） |
+| `--min-likes` | `1000` | 点赞下载下限（服务端 `min_faves` + 本地二次过滤）；`0` 表示不限制 |
+| `--min-reposts` | `100` | 转发下载下限（本地过滤）；`0` 表示不限制 |
 | `--delay` | `1.5` | 翻页间隔秒数 |
 | `--out` | `work/xfetch-run` | 输出根目录 |
 | `--publish-history` | Skill 内 `state/published_videos.jsonl` | 已发布历史；命中唯一 ID 时下载前跳过，不进入后续环节 |
@@ -163,7 +164,7 @@ work/xfetch-run/
 ├── frames/              # 定稿后的抽帧 jpg（<编号>.<品牌名>_<主题名>_帧序号.jpg）
 ├── publish.json         # Agent 写入的标题、正文、品牌、文件主题和推荐话题
 ├── topic_plan.json      # 自动模式：栏目、系列期数、检索式、评分维度和近期避开项
-├── manifest.json        # 选题计划、候选、发布跳过、标题正文、下载、抽帧和淘汰原因
+├── manifest.json        # 选题计划、候选、发布/互动跳过、标题正文、下载、抽帧和淘汰原因
 ├── candidates.csv       # 未发布候选（含点赞/评论/播放），可直接排序
 ├── xiaohongshu_publish_plan.json     # 可选：小红书浏览器发布计划
 ├── xiaohongshu_publish_receipt.json  # 可选：实际发布登记回执
@@ -281,7 +282,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
 
 1. 用户没有给主题时直接使用 `--auto-topic`，不要追问选题；用户给了主题才从 `--prompt` 提取车型/场景并补充同义检索式。自动模式读取 `topic_plan.json`，手动模式才使用提示词展开规则。
 2. X 登录态固定使用本机 Chrome `Default`，不要询问浏览器或 Profile，也不要默认改用内置浏览器。finder 自动执行 `xfetch auth check` 验证；只有登录校验失败时，才提示用户在 Chrome `Default` 登录 X，或显式选择 cookies.txt / auth-file 排障。
-3. 运行 finder（先 `--dry-run` 看榜单，由 Agent 检查内容是否对路再真下，无需让人工补选题）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。手动面向小红书必须加 `--xiaohongshu`，自动模式已隐含；禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
+3. 运行 finder（先 `--dry-run` 看榜单，由 Agent 检查内容是否对路再真下，无需让人工补选题）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。默认转发 ≥100 且点赞 ≥1000 才允许下载，不足项写入 `engagement_skipped`，不得为了凑数量调用下载器递补低互动素材。手动面向小红书必须加 `--xiaohongshu`，自动模式已隐含；禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
 4. 对下载的每条视频做三项核验，并记录每条的结果与淘汰原因：
    - **选题**：按 100 分模型逐项评分，自动模式只最终入选达到 70 分、符合当前系列且不与近期车型重复的视频；互动量不得替代其他评分项。
    - **时长**：默认素材上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。自动计划的 15–45/20–60 秒是推荐成片时长，不是放宽素材上限的理由。
