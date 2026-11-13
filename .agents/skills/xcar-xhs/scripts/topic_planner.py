@@ -7,7 +7,7 @@ from pathlib import Path
 
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 1
+STRATEGY_VERSION = 2
 SCORE_THRESHOLD = 70
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
@@ -34,12 +34,12 @@ PILLARS = {
         "duration": "15–45",
         "series": (
             {
-                "id": "rare_jdm_90s",
-                "label": "90 年代 JDM 稀有车型",
+                "id": "rare_jdm",
+                "label": "JDM 稀有车型",
                 "query_groups": (
-                    '("Honda Beat" OR "Autozam AZ-1" OR "Suzuki Cappuccino")',
-                    '("Nissan Figaro" OR "Nissan Pao" OR "Toyota Sera")',
-                    '("Mazda Cosmo" OR "Eunos Cosmo" OR "Mitsubishi GTO")',
+                    '("Honda Beat" OR "Autozam AZ-1" OR "Suzuki Cappuccino" OR "Honda S660")',
+                    '("Nissan Figaro" OR "Nissan Pao" OR "Toyota Sera" OR "Daihatsu Copen")',
+                    '("Mazda Cosmo" OR "Eunos Cosmo" OR "Mitsubishi GTO" OR "Honda NSX")',
                 ),
             },
             {

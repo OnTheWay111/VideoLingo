@@ -214,9 +214,9 @@ def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
     item["brand"] = "Honda"
     item["file_topic"] = "Beat 车身细节"
     topic_plan = {
-        "strategy_version": 1,
+        "strategy_version": 2,
         "pillar": "rare_models",
-        "series_id": "rare_jdm_90s",
+        "series_id": "rare_jdm",
         "series_episode": 1,
     }
     (tmp_path / "manifest.json").write_text(json.dumps({
@@ -233,9 +233,9 @@ def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
     assert saved["brand"] == "Honda"
     assert saved["file_topic"] == "Beat 车身细节"
     assert saved["topic_pillar"] == "rare_models"
-    assert saved["topic_series_id"] == "rare_jdm_90s"
+    assert saved["topic_series_id"] == "rare_jdm"
     assert saved["topic_series_episode"] == 1
-    assert saved["topic_strategy_version"] == 1
+    assert saved["topic_strategy_version"] == 2
 
 
 def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):

@@ -291,6 +291,10 @@ def test_auto_topic_plan_enforces_content_mix_and_five_episode_series():
         "visual_experiment": 3,
     }
     rare = [plan for plan in plans if plan["pillar"] == "rare_models"]
+    assert rare[0]["series_id"] == "rare_jdm"
+    assert rare[0]["series_label"] == "JDM 稀有车型"
+    assert "90 年代" not in rare[0]["prompt"]
+    assert any('"Honda S660"' in query for query in rare[0]["queries"])
     assert [plan["series_episode"] for plan in rare[:5]] == [1, 2, 3, 4, 5]
     assert len({plan["series_id"] for plan in rare[:5]}) == 1
     assert len({plan["series_id"] for plan in rare[5:10]}) == 1
