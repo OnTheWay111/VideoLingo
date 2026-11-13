@@ -25,6 +25,13 @@ def test_finder_defaults_to_chrome_default_for_x_and_downloads():
     assert args.browser_profile == "Default"
     assert args.min_likes == 1000
     assert args.min_reposts == 100
+    assert finder.selection_target(args) == 3
+    args.top = 1
+    assert finder.selection_target(args) == 3
+    args.top = 5
+    assert finder.selection_target(args) == 5
+    args.dry_run = True
+    assert finder.selection_target(args) == 0
     assert finder.session_summary(args) == {
         "mode": "browser", "browser": "chrome", "profile": "Default",
         "cookies_file": None,
@@ -108,7 +115,12 @@ def test_download_report_includes_filename_and_absolute_directory(tmp_path):
 
     finder.write_outputs(args, "汽车", ["car filter:media"], [candidate], downloads, [], [], {}, tmp_path)
 
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
     report = (tmp_path / "REPORT.md").read_text()
+    assert manifest["minimum_selected"] == 3
+    assert manifest["selection_target"] == 3
+    assert manifest["selection_complete"] is False
+    assert "发布名单数量：至少 3 条；未满足，必须继续搜索" in report
     assert "| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |" in report
     assert "`clip.mp4`" in report
     assert "`%s`" % (tmp_path / "videos") in report
@@ -127,6 +139,35 @@ def publish_candidate(tweet_id):
         "likes": 10, "replies": 2, "reposts": 3, "views": 100,
         "text": "Car video",
     }
+
+
+def test_download_candidates_backfills_until_minimum_selection(tmp_path, monkeypatch):
+    candidates = [publish_candidate(str(index)) for index in range(1, 5)]
+    attempted = []
+
+    def fake_download(candidate, videos_dir, args):
+        attempted.append(candidate["id"])
+        videos_dir.mkdir(parents=True, exist_ok=True)
+        path = videos_dir / ("%s.mp4" % candidate["id"])
+        path.write_bytes(b"video")
+        return {
+            "file": str(path), "duration": 301 if candidate["id"] == "1" else 30,
+            "width": 1920, "height": 1080,
+        }, None
+
+    monkeypatch.setattr(finder, "download_video", fake_download)
+    monkeypatch.setattr(finder, "extract_frames", lambda *args: [])
+    args = SimpleNamespace(max_duration=300, frames=0)
+    history = finder.PublishedHistory(tmp_path / "published.jsonl")
+
+    downloads, rejected = finder.download_candidates(
+        candidates, 3, history, tmp_path / "videos", tmp_path / "rejected",
+        tmp_path / "frames", args, [])
+
+    assert attempted == ["1", "2", "3", "4"]
+    assert [item["candidate"]["id"] for item in downloads] == ["2", "3", "4"]
+    assert [item["candidate"]["id"] for item in rejected] == ["1"]
+    assert Path(rejected[0]["video"]["file"]).parent == tmp_path / "rejected"
 
 
 def publish_item(tmp_path, tweet_id, directory="videos", rejected=False):
@@ -267,6 +308,53 @@ def test_finalize_rejects_missing_publish_content_before_renaming(tmp_path):
 
     assert original.is_file()
     assert not (tmp_path / "REPORT.md").exists()
+
+
+def test_finalize_blocks_new_manifest_with_fewer_than_three_selected(tmp_path):
+    import pytest
+
+    selected = publish_item(tmp_path, "1")
+    original = Path(selected["video"]["file"])
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "minimum_selected": 3,
+        "selection_complete": False,
+        "downloads": [selected],
+        "rejected": [],
+    }))
+    publish_path = tmp_path / "publish.json"
+    publish_path.write_text(json.dumps({
+        "1": {"title": "合格车辆", "body": "正文"},
+    }, ensure_ascii=False))
+
+    with pytest.raises(ValueError, match="至少要有 3 条"):
+        finalizer.finalize(tmp_path, publish_path)
+
+    assert original.is_file()
+    assert not (tmp_path / "REPORT.md").exists()
+
+
+def test_finalize_accepts_three_selected_and_marks_selection_complete(tmp_path):
+    downloads = [publish_item(tmp_path, str(index)) for index in range(1, 4)]
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "minimum_selected": 3,
+        "selection_target": 3,
+        "selection_complete": False,
+        "stats": {"selection_complete": False},
+        "downloads": downloads,
+        "rejected": [],
+    }))
+    publish_path = tmp_path / "publish.json"
+    publish_path.write_text(json.dumps({
+        str(index): {"title": "车辆 %d" % index, "body": "正文"}
+        for index in range(1, 4)
+    }, ensure_ascii=False))
+
+    finalizer.finalize(tmp_path, publish_path)
+
+    saved = json.loads((tmp_path / "manifest.json").read_text())
+    assert len(saved["downloads"]) == 3
+    assert saved["selection_complete"] is True
+    assert saved["stats"]["selection_complete"] is True
 
 
 def test_auto_topic_plan_enforces_content_mix_and_five_episode_series():

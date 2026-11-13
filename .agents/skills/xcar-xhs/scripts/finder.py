@@ -97,6 +97,7 @@ SORT_LABELS = {
 }
 
 VIDEO_TYPES = {"video", "animated_gif", "gif"}
+MIN_PUBLISH_SELECTION = 3
 
 
 def log(msg):
@@ -445,6 +446,38 @@ def reject_overlong_video(video, rejected_dir, max_duration):
     return "超时 %gs > %gs" % (duration, max_duration)
 
 
+def selection_target(args):
+    if getattr(args, "dry_run", False):
+        return 0
+    return max(getattr(args, "top", MIN_PUBLISH_SELECTION), MIN_PUBLISH_SELECTION)
+
+
+def download_candidates(ranked, target, history, videos_dir, rejected_dir, frames_dir, args,
+                        publish_skipped):
+    downloads, rejected = [], []
+    for candidate in ranked:
+        if len(downloads) >= target:
+            break
+        match = history.check(source_id=candidate.get("id"))
+        if match:
+            publish_skipped.append({"candidate": candidate, "match": match,
+                                    "reason": "已发布过，下载前跳过"})
+            log("  发布状态已变化，跳过 %s" % candidate["url"])
+            continue
+        video, error = download_video(candidate, videos_dir, args)
+        if not video:
+            log("  跳过 %s（%s）" % (candidate["url"], str(error)[:120]))
+            continue
+        reason = reject_overlong_video(video, rejected_dir, args.max_duration)
+        if reason:
+            log("  淘汰 %s（%s）" % (candidate["url"], reason))
+            rejected.append({"candidate": candidate, "video": video, "reason": reason})
+            continue
+        frames = extract_frames(candidate, video["file"], frames_dir, args.frames)
+        downloads.append({"candidate": candidate, "video": video, "frames": frames})
+    return downloads, rejected
+
+
 def write_outputs(args, prompt, queries, candidates, downloads, rejected, dropped, stats, out_dir,
                   publish_skipped=None, topic_skipped=None, topic_plan=None, engagement_skipped=None):
     publish_skipped = publish_skipped or []
@@ -453,11 +486,15 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
     history_path = str(default_history_path() if not getattr(args, "publish_history", None)
                        else Path(args.publish_history).expanduser().resolve())
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    target = selection_target(args)
     manifest = {
         "prompt": prompt,
         "generated_at": now,
         "sort": args.sort,
         "max_duration_seconds": args.max_duration,
+        "minimum_selected": MIN_PUBLISH_SELECTION,
+        "selection_target": target,
+        "selection_complete": len(downloads) >= target if target else None,
         "download_thresholds": {
             "min_likes": getattr(args, "min_likes", 1000),
             "min_reposts": getattr(args, "min_reposts", 100),
@@ -493,11 +530,16 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
     by_likes = sort_candidates(candidates, "likes")
     by_replies = sort_candidates(candidates, "replies")
     duration_rule = "不超过 %g 秒" % args.max_duration if args.max_duration > 0 else "不限制"
+    selection_status = ("预演不下载；正式运行至少入选 %d 条" % MIN_PUBLISH_SELECTION if not target
+                        else "%s（目标 %d 条，当前 %d 条）" % (
+                            "已满足" if len(downloads) >= target else "未满足，必须继续搜索",
+                            target, len(downloads)))
     lines = ["# X 汽车视频搜索报告", "",
              "- 提示词：%s" % prompt,
              "- 生成时间：%s" % now,
              "- 排序：%s（%s）" % (args.sort, SORT_FIELDS[args.sort]),
              "- 视频时长：%s" % duration_rule,
+             "- 发布名单数量：至少 %d 条；%s" % (MIN_PUBLISH_SELECTION, selection_status),
              "- 下载互动门槛：转发 ≥ %d 且点赞 ≥ %d；下载前跳过 %d 条" % (
                  getattr(args, "min_reposts", 100), getattr(args, "min_likes", 1000),
                  len(engagement_skipped)),
@@ -606,7 +648,8 @@ def build_parser():
                     help="按小红书内容策略和发布历史自动选择栏目、系列及检索式")
     ap.add_argument("--query", action="append", default=[], help="X 检索式，可重复")
     ap.add_argument("--sort", choices=sorted(SORT_FIELDS), default="likes")
-    ap.add_argument("--top", type=int, default=3, help="下载前 N 条")
+    ap.add_argument("--top", type=int, default=3,
+                    help="目标入选 N 条；正式运行最少 3 条，失败或超时自动递补")
     ap.add_argument("--candidates", type=int, default=15, help="stdout 展示条数")
     ap.add_argument("--limit", type=int, default=25, help="每组每页条数")
     ap.add_argument("--pages", type=int, default=1)
@@ -639,6 +682,8 @@ def main():
     args = build_parser().parse_args()
     if args.max_duration < 0:
         die("--max-duration 不能小于 0")
+    if args.top < 0:
+        die("--top 不能小于 0")
     if args.min_likes < 0 or args.min_reposts < 0:
         die("--min-likes 和 --min-reposts 不能小于 0")
     if args.auto_topic and (args.prompt or args.query):
@@ -732,31 +777,18 @@ def main():
              "already_published_skipped": len(publish_skipped),
              "engagement_skipped": len(engagement_skipped),
              "xiaohongshu_topic_skipped": len(topic_skipped),
-             "dropped_non_car": len(dropped), "requested_top": args.top}
+             "dropped_non_car": len(dropped), "requested_top": args.top,
+             "minimum_selected": MIN_PUBLISH_SELECTION, "selection_target": selection_target(args)}
 
     downloads, rejected = [], []
-    if not args.dry_run and args.top > 0:
-        for candidate in ranked[:args.top]:
-            match = history.check(source_id=candidate.get("id"))
-            if match:
-                publish_skipped.append({"candidate": candidate, "match": match,
-                                        "reason": "已发布过，下载前跳过"})
-                log("  发布状态已变化，跳过 %s" % candidate["url"])
-                continue
-            video, error = download_video(candidate, videos_dir, args)
-            if not video:
-                log("  跳过 %s（%s）" % (candidate["url"], str(error)[:120]))
-                continue
-            reason = reject_overlong_video(video, rejected_dir, args.max_duration)
-            if reason:
-                log("  淘汰 %s（%s）" % (candidate["url"], reason))
-                rejected.append({"candidate": candidate, "video": video, "reason": reason})
-                continue
-            frames = extract_frames(candidate, video["file"], frames_dir, args.frames)
-            downloads.append({"candidate": candidate, "video": video, "frames": frames})
+    target = selection_target(args)
+    if target:
+        downloads, rejected = download_candidates(
+            ranked, target, history, videos_dir, rejected_dir, frames_dir, args, publish_skipped)
 
     stats["already_published_skipped"] = len(publish_skipped)
     stats["rejected_over_duration"] = len(rejected)
+    stats["selection_complete"] = len(downloads) >= target if target else None
     write_outputs(args, args.prompt, queries, ranked, downloads, rejected, dropped, stats, out_dir,
                   publish_skipped, topic_skipped, topic_plan=topic_plan,
                   engagement_skipped=engagement_skipped)
@@ -770,6 +802,11 @@ def main():
     if rejected:
         print("淘汰目录: %s" % rejected_dir)
     print("报告: %s" % (out_dir / "REPORT.md"))
+    if target and len(downloads) < target:
+        die("发布名单未达目标：当前 %d 条，目标 %d 条（硬性最少 %d 条）。"
+            "请增加 --pages、补充同义 --query 或扩大车型/场景检索后继续，"
+            "不得降低互动、选题、画面、时长或版权标准。" % (
+                len(downloads), target, MIN_PUBLISH_SELECTION), code=3)
 
 
 if __name__ == "__main__":

@@ -178,6 +178,15 @@ def finalize(out_dir, publish_file):
         raise ValueError("发布内容与 manifest 不一致；缺少=%s，多余=%s" % (missing, unknown))
 
     reject_explainer_downloads(manifest)
+    minimum_selected = manifest.get("minimum_selected")
+    if minimum_selected is not None:
+        required_selected = max(minimum_selected, manifest.get("selection_target") or 0)
+        if len(manifest.get("downloads", [])) < required_selected:
+            raise ValueError(
+                "发布名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
+                % (required_selected, len(manifest.get("downloads", []))))
+        manifest["selection_complete"] = True
+        manifest.setdefault("stats", {})["selection_complete"] = True
     operations = []
     for group_name in ("downloads", "rejected"):
         group = manifest.get(group_name, [])

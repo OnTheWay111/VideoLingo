@@ -54,6 +54,13 @@ def build_plan(out_dir, tweet_id, history, action="publish"):
         raise ValueError("action 必须是 preview、draft 或 publish")
     item = load_download(out_dir, tweet_id)
     manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
+    minimum_selected = manifest.get("minimum_selected")
+    required_selected = (max(minimum_selected, manifest.get("selection_target") or 0)
+                         if minimum_selected is not None else 0)
+    if action in ("publish", "draft") and len(manifest.get("downloads", [])) < required_selected:
+        raise ValueError(
+            "发布名单至少要有 %d 条，当前只有 %d 条；禁止生成发布计划，请继续搜索递补"
+            % (required_selected, len(manifest.get("downloads", []))))
     topic_plan = manifest.get("topic_plan") or {}
     candidate = item["candidate"]
     title, body, topics, video = validate_content(item)

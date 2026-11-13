@@ -167,6 +167,20 @@ def test_successful_record_blocks_future_plan(tmp_path):
     assert skipped["reason"] == "already_published"
 
 
+def test_publish_plan_blocks_new_manifest_with_fewer_than_three_selected(tmp_path):
+    item = finalized_output(tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "minimum_selected": 3,
+        "downloads": [item],
+    }, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="至少要有 3 条"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+
+    assert not (tmp_path / "plans" / "123.json").exists()
+
+
 def test_plan_validates_xiaohongshu_title_length(tmp_path):
     finalized_output(tmp_path, title="这是一个明显超过二十个字符的小红书汽车视频标题")
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
@@ -207,8 +221,10 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
 
     monkeypatch.setattr(finder, "download_video", fake_download)
 
-    finder.main()
+    with pytest.raises(SystemExit) as exc_info:
+        finder.main()
 
+    assert exc_info.value.code == 3
     assert downloaded == ["new"]
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["stats"]["already_published_skipped"] == 1
