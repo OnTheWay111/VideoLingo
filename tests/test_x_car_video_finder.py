@@ -15,6 +15,23 @@ SPEC.loader.exec_module(finder)
 import topic_planner
 
 
+def test_finder_defaults_to_chrome_default_for_x_and_downloads():
+    parser = finder.build_parser()
+    args = parser.parse_args(["--prompt", "汽车"])
+
+    assert "默认 chrome" in parser.format_help()
+    assert "默认 Default" in parser.format_help()
+    assert args.web_session == "chrome"
+    assert args.browser_profile == "Default"
+    assert finder.session_summary(args) == {
+        "mode": "browser", "browser": "chrome", "profile": "Default",
+        "cookies_file": None,
+    }
+    assert finder.ytdlp_session_args(args) == [
+        "--cookies-from-browser", "chrome:Default",
+    ]
+
+
 def make_video(tmp_path, duration):
     path = tmp_path / "videos" / "clip.mp4"
     path.parent.mkdir()

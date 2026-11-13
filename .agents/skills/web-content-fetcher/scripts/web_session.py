@@ -25,20 +25,20 @@ class SessionError(ValueError):
     pass
 
 
-def add_session_arguments(parser):
+def add_session_arguments(parser, default_browser="off", default_profile=None):
     group = parser.add_argument_group("Web 登录会话")
     source = group.add_mutually_exclusive_group()
     source.add_argument(
-        "--web-session", choices=("off",) + BROWSERS, default="off",
-        help="显式使用指定浏览器的登录 Cookie；默认 off，不读取浏览器",
+        "--web-session", choices=("off",) + BROWSERS, default=default_browser,
+        help="使用指定浏览器的登录 Cookie；默认 %s" % default_browser,
     )
     source.add_argument(
         "--cookies-file", default=None,
         help="使用 Netscape cookies.txt；与 --web-session 二选一",
     )
     group.add_argument(
-        "--browser-profile", default=None,
-        help='浏览器 Profile，例如 Default 或 "Profile 1"',
+        "--browser-profile", default=default_profile,
+        help="浏览器 Profile；默认 %s" % (default_profile or "浏览器默认"),
     )
 
 

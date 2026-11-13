@@ -14,6 +14,13 @@ chrome = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(chrome)
 
 
+def test_xiaohongshu_defaults_to_chrome_default_profile():
+    args = chrome.build_parser().parse_args(["--out", "work/xfetch-run"])
+
+    assert args.browser_profile == "Default"
+    assert chrome.ChromeSession().profile == "Default"
+
+
 def test_login_page_detection():
     assert chrome.login_page("短信登录 发送验证码", "https://creator.xiaohongshu.com/login")
     assert chrome.login_page("其他内容", "https://creator.xiaohongshu.com/login?source=official")

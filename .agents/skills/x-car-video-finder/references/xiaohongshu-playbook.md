@@ -110,35 +110,11 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 
 发布成功写入 `state/published_videos.jsonl`，草稿成功写入独立的 `state/draft_videos.jsonl`。正式发布在两条成功记录之间使用 `SystemRandom` 随机等待 60–600 秒；最后一条、草稿、跳过和失败均不等待。该间隔仅用于降低突发频率，不是规避审核的手段。
 
-## 四、浏览器自动执行
+## 四、Chrome Default 浏览器自动执行
 
-Agent 读取发布计划后，调用 `mcp__desktop_browser__run` 完成以下动作；不需要 Playwright、Selenium 或读取个人浏览器 Cookie：
+小红书登录态固定复用本机 Chrome `Default`。Agent 不再使用内置浏览器，也不再询问浏览器或 Profile；发布或保存草稿仍需用户事先选择。
 
-1. 打开 `https://creator.xiaohongshu.com/publish/publish?source=official`。若出现短信登录页，展示页面并让用户完成登录，不能代替用户接收或猜测验证码。
-2. 在“上传视频”页点击“上传视频”，通过文件对话框上传计划里的 `video_file`。等待编辑页出现，并等到上传完成，不能在上传进行中点击发布。
-3. 用元素快照定位标题和正文输入框，填入 `title` 与 `body`。正文末尾逐个输入 `topics`；出现话题候选时选择匹配项，并核对没有串行、重复或误选。
-4. 检查视频、标题、正文和话题均与计划一致。若 `confirm_publish=false`，到这里停止，不点击“发布”，也不写历史。
-5. 若 `confirm_publish=true` 且用户已明确要求发布，点击“发布”。等待页面出现明确的成功状态或新笔记 URL，不能用“按钮已点击”代替发布成功。
-
-成功后登记：
-
-```bash
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run record --status published --note-url "实际笔记 URL（如有）"
-```
-
-如果点击后超时、页面异常或无法确认是否成功，不要盲目重试；登记 `unconfirmed` 阻止重复发布，并由用户到创作者后台核对：
-
-```bash
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run record --status unconfirmed
-```
-
-`record` 会拒绝预演计划，只有带 `confirm_publish=true` 的计划才能写入历史。回执保存在 `<out>/xiaohongshu_publish_receipt.json`，历史文件才是后续去重的权威依据。
-
-### 用户明确授权的 Chrome 会话
-
-把各条确认计划保存为 `<out>/plans_confirmed/<原帖ID>.json`，然后使用：
+把各条确认计划保存为 `<out>/plans_confirmed/<原帖ID>.json`，然后先验证会话，再逐条执行：
 
 ```bash
 python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
@@ -148,9 +124,17 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
-该脚本在 macOS 上只复制 Chrome 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，使用 `websocket-client` 通过 CDP 操作独立 Chrome；不会修改原浏览器配置或标签页，初始化或发布异常时也清理临时配置，不输出 Cookie 值。`--browser-profile` 默认 `Default`，`--only` 可限制为一条，去掉 `--headless` 可显示浏览器。
+该脚本在 macOS 上只复制 Chrome `Default` 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，使用 `websocket-client` 通过 CDP 操作独立 Chrome；不会修改原浏览器配置或标签页，初始化或发布异常时也清理临时配置，不输出 Cookie 值。`--browser-profile` 默认固定为 `Default`，`--only` 可限制为一条，去掉 `--headless` 可显示浏览器。
 
-脚本使用正常 Chrome 标识避免降级页面，通过无障碍树等待发布按钮真正启用，再按节点位置发送真实鼠标事件。标题、正文和话题填写后先复读核验，再保存发布前截图；成功或待确认时保存结果截图到 `<out>/browser/`。批量按 manifest 入选顺序逐条执行，任何待确认或错误都会停止后续项。`result_url` 是发布结果页，`note_url` 只能是公开笔记地址，二者不得混用。
+脚本自动完成以下动作，不需要 Playwright 或 Selenium：
+
+1. 打开 `https://creator.xiaohongshu.com/publish/publish?source=official`。若出现短信登录页，让用户在本机 Chrome `Default` 完成登录，不能代替用户接收或猜测验证码。
+2. 上传计划里的 `video_file`，等待编辑页出现并确认上传完成，不能在上传进行中点击发布。
+3. 填入 `title` 与 `body`，逐个添加 `topics`，再复读标题、正文和话题，核对没有串行、重复或误选。
+4. 若 `confirm_publish=false`，在点击“发布”前停止，不写历史。
+5. 若 `confirm_publish=true` 且用户已明确要求发布，通过无障碍树等待发布按钮启用，再发送真实鼠标事件。只有页面出现明确成功状态才登记 `published`，不能用“按钮已点击”代替成功。
+
+脚本使用正常 Chrome 标识避免降级页面，并保存发布前、成功或异常截图到 `<out>/browser/`。批量按 manifest 入选顺序逐条执行，任何待确认或错误都会停止后续项。点击后结果不明时登记 `unconfirmed` 阻止重复发布，由用户到创作者后台核对，不得盲目重试。`result_url` 是发布结果页，`note_url` 只能是公开笔记地址，二者不得混用。
 
 所有实测问题、根因、异常处理和发布前检查清单见 [小红书 Chrome 发布实测经验与故障手册](xiaohongshu-chrome-troubleshooting.md)。修改 Chrome 发布逻辑后必须按该手册补回归，不要只验证“脚本能运行”。
 

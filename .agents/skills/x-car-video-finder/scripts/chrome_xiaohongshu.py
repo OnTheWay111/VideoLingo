@@ -458,15 +458,24 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
     return summary
 
 
-def main(argv=None):
+CHROME_PROFILE = "Default"
+
+
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--history-file", default=str(default_history_path()))
-    parser.add_argument("--browser-profile", default="Default")
+    parser.add_argument("--browser-profile", default=CHROME_PROFILE,
+                        help="Chrome Profile；默认固定为 Default")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--only", help="只发布指定原帖 ID")
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--timeout", type=int, default=180)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
     out_dir = Path(args.out).resolve()
     try:

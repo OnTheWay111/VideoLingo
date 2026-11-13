@@ -2,7 +2,7 @@
 """x-car-video-finder: 提示词 -> X 检索式 -> 汽车视频过滤 -> 排序 -> 下载 -> 抽帧。
 
 依赖: xfetch skill（twikit 搜索）、web-content-fetcher（Web 会话）、yt-dlp、ffmpeg。
-登录态: 通过 --web-session、--cookies-file、--auth-file 或 XFETCH_* 环境变量提供。
+登录态: 默认复用本机 Chrome Default；也可用 cookies.txt、auth-file 或 XFETCH_* 排障。
 """
 
 import argparse
@@ -557,7 +557,11 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
     log("清单: %s" % (out_dir / "manifest.json"))
 
 
-def main():
+DEFAULT_WEB_SESSION = "chrome"
+DEFAULT_BROWSER_PROFILE = "Default"
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description="按提示词或自动选题搜 X 汽车视频，排序后下载")
     ap.add_argument("--prompt", help="原始提示词（中文/英文均可）；手动模式必填")
     ap.add_argument("--auto-topic", action="store_true",
@@ -586,8 +590,12 @@ def main():
     ap.add_argument("--max-duration", type=float, default=300,
                     help="视频时长上限（秒），默认 300（5 分钟），0 表示不限制")
     ap.add_argument("--frames", type=int, default=2)
-    add_session_arguments(ap)
-    args = ap.parse_args()
+    add_session_arguments(ap, DEFAULT_WEB_SESSION, DEFAULT_BROWSER_PROFILE)
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
     if args.max_duration < 0:
         die("--max-duration 不能小于 0")
     if args.auto_topic and (args.prompt or args.query):
@@ -628,8 +636,8 @@ def main():
         log("提示: 未提供显式会话，尝试使用 xfetch 已保存的会话。")
     ok, detail = auth_ok(py, xfetch, env)
     if not ok:
-        die("X 登录态不可用。可加 `--web-session chrome` 复用浏览器登录态，"
-            "或传 `--cookies-file cookies.txt` / `--auth-file /tmp/xfetch-auth.env`。"
+        die("X 登录态不可用。请确认本机 Chrome Default 已登录 X；"
+            "临时排障也可传 `--cookies-file cookies.txt` / `--auth-file /tmp/xfetch-auth.env`。"
             "\n详情: %s" % detail[:300], code=2)
 
     queries = args.query or (topic_plan["queries"] if topic_plan else

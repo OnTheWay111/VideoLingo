@@ -1,6 +1,6 @@
 ---
 name: x-car-video-finder
-description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、发布历史下载前去重，以及通过内置浏览器上传并发布视频。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
+description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、发布历史下载前去重，以及复用本机 Chrome Default 登录态上传并发布视频。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
@@ -11,11 +11,11 @@ license: MIT
 | 能力 | 工具 | 说明 |
 |---|---|---|
 | 搜索 X（带登录态） | `xfetch` skill（`../xfetch/scripts/xfetch.py`，twikit） | 输出 JSONL，含 `favorite_count` / `reply_count` / `retweet_count` / `view_count` / `media` |
-| 统一 Web 会话 | `web-content-fetcher/scripts/web_session.py` | 显式复用浏览器 Cookie 或 cookies.txt，临时 X 凭据自动清理 |
-| 下载媒体 | `yt-dlp` | X 视频自动合并成 mp4 |
+| 统一 Web 会话 | `web-content-fetcher/scripts/web_session.py` | 固定复用本机 Chrome `Default`，临时 X 凭据自动清理 |
+| 下载媒体 | `yt-dlp` | 使用同一 Chrome `Default` 会话，X 视频自动合并成 mp4 |
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
 | 发布前去重 | `scripts/publish_history.py` | 固定 JSONL 保存唯一 ID、标题和状态；已发布或结果待确认的视频下载前跳过 |
-| 小红书发布 | `scripts/xiaohongshu_publisher.py` + 内置浏览器 | 生成计划，自动上传、填标题正文话题；显式确认后才发布并登记 |
+| 小红书发布 | `scripts/xiaohongshu_publisher.py` + `scripts/chrome_xiaohongshu.py` | 固定复用 Chrome `Default`，自动上传、填标题正文话题；显式确认后才发布并登记 |
 
 ## 前置条件
 
@@ -27,8 +27,8 @@ license: MIT
   .venv-xfetch/bin/pip install -r .agents/skills/xfetch/scripts/requirements.txt
   ```
 - **yt-dlp + ffmpeg**：`which yt-dlp ffmpeg`，macOS 可用 `brew install yt-dlp ffmpeg`。
-- **X 登录态**：X 搜索必须登录，可显式复用浏览器会话、cookies.txt 或既有 xfetch 会话（见下）。
-- **小红书登录态**：可使用 Kimi Code 内置浏览器；用户明确授权 Chrome 时，也可用 `scripts/chrome_xiaohongshu.py` 复制 Chrome 会话到临时隔离配置并通过 CDP 发布。无需 Playwright/Selenium，默认不读取个人浏览器 Cookie，临时配置用完删除且不输出 Cookie 值。
+- **X 登录态**：固定使用本机 Chrome `Default` 的 X 登录态，无需每次选择浏览器或 Profile。
+- **小红书登录态**：固定使用本机 Chrome `Default` 的小红书登录态，由 `scripts/chrome_xiaohongshu.py` 复制到临时隔离配置并通过 CDP 发布。无需 Playwright/Selenium，临时配置用完删除且不输出 Cookie 值。
 
 ## 在 DeepSeek Harness 中被发现与 / 调用
 
@@ -50,26 +50,25 @@ DSH 的本地 skill 提供方只扫描下列根（rank 越高优先级越低）�
 - 全局安装（所有项目）：把本目录、`web-content-fetcher` 和 `xfetch` 一起复制到 `~/.agents/skills/` 或 `~/.dsh/skills/`。
 - 手改文件后模型目录会自动刷新；若 `/` 菜单没更新，刷新页面、新建会话或重连即可。
 
-## Web 登录会话（推荐）
+## Web 登录会话（固定 Chrome Default）
 
-`finder.py` 复用 `web-content-fetcher/scripts/web_session.py`。**默认 `--web-session off`，不会暗中读取浏览器 Cookie**；只有用户明确选择浏览器或 Cookie 文件时才访问登录态。
+`finder.py` 复用 `web-content-fetcher/scripts/web_session.py`，默认固定为 `--web-session chrome --browser-profile Default`。X 搜索、登录校验和视频下载都复用本机 Chrome `Default` 的 X 登录态，无需每次选择或重复传参。
 
-- **复用浏览器**：`--web-session chrome --browser-profile Default`。浏览器可为 `chrome` / `chromium` / `edge` / `brave` / `firefox` / `safari` / `opera` / `vivaldi` / `whale`，具体可用性取决于本机浏览器和 yt-dlp。
-- **使用导出的 Cookie**：`--cookies-file ~/Downloads/cookies.txt`，要求 Netscape cookies.txt 格式，与 `--web-session` 二选一。
-- **X 的既有方式仍可用**：`--auth-file /tmp/xfetch-auth.env` 或 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`。`--auth-file` 只用于 X，不会传给其他平台。
-- **X 凭据优先级**：显式 `--auth-file` > `--cookies-file` > `--web-session` > 环境变量或 xfetch 已保存会话。macOS 上 Chrome / Edge / Brave / Chromium 先原生提取，失败后自动回退 CDP；CDP 需要可选依赖 `websocket-client`（`.venv-xfetch/bin/pip install websocket-client`）。其他浏览器通过 xfetch 提取。非 Chromium 的 X 提取暂不支持指定 Profile，需改用 cookies.txt。
-- **其他平台**：由 yt-dlp 的 `--cookies-from-browser` / `--cookies` 读取对应站点会话，不使用 `X_BEARER_TOKEN`、`XQUIK_API_KEY`、`XAI_API_KEY` 或 ScrapeCreators。
+- **排障用 Cookie 文件**：`--cookies-file ~/Downloads/cookies.txt`，要求 Netscape cookies.txt 格式，与 `--web-session` 二选一；只有显式传参时才替代固定默认会话。
+- **排障用 X 凭据**：`--auth-file /tmp/xfetch-auth.env` 或 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`。`--auth-file` 只用于 X，不会传给其他平台。
+- **X 凭据优先级**：显式 `--auth-file` > `--cookies-file` > 固定 Chrome `Default` 会话 > 环境变量或 xfetch 已保存会话。macOS 上先原生提取 Chrome 会话，失败后自动回退 CDP；CDP 需要可选依赖 `websocket-client`（`.venv-xfetch/bin/pip install websocket-client`）。
+- **其他平台**：由 yt-dlp 的 `--cookies-from-browser chrome:Default` 读取对应站点会话；显式使用 cookies.txt 时改传 `--cookies`。不使用 `X_BEARER_TOKEN`、`XQUIK_API_KEY`、`XAI_API_KEY` 或 ScrapeCreators。
 
-`finder.py` 会先通过 `xfetch auth check` 实际请求 X 验证会话，再开始搜索；临时导入的 X 凭据在进程结束时清理。报告只记录会话方式、浏览器和 Profile，不记录 Cookie 值。macOS 可能出现钥匙串授权弹窗，这是浏览器 Cookie 解密所需；用户不应在未明确授权时替其选择浏览器。
+`finder.py` 会先通过 `xfetch auth check` 实际请求 X 验证会话，再开始搜索；临时导入的 X 凭据在进程结束时清理。报告只记录会话方式、浏览器和 Profile，不记录 Cookie 值。macOS 可能出现钥匙串授权弹窗，这是解密 Chrome `Default` Cookie 所需。
 
-手动提取仍可用：
+手动提取仅用于排障：
 
 ```bash
-python3 .agents/skills/web-content-fetcher/scripts/auth_from_chrome.py --out /tmp/xfetch-auth.env
+python3 .agents/skills/web-content-fetcher/scripts/auth_from_chrome.py --profile Default --out /tmp/xfetch-auth.env
 python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth check
 ```
 
-钥匙串取不到时可继续使用 `web-content-fetcher/scripts/auth_from_chrome_cdp.py`，或手动设置 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`；这些凭据都不能打印、提交或写入报告。
+钥匙串取不到时可继续使用 `web-content-fetcher/scripts/auth_from_chrome_cdp.py --profile Default`，或手动设置 `XFETCH_AUTH_TOKEN` / `XFETCH_CT0`；这些凭据都不能打印、提交或写入报告。
 
 ## 用法
 
@@ -95,7 +94,6 @@ python3 .agents/skills/x-car-video-finder/scripts/topic_planner.py
 ```bash
 python3 .agents/skills/x-car-video-finder/scripts/finder.py \
   --prompt "找几条 Cybertruck 越野视频，点赞高的优先" \
-  --web-session chrome --browser-profile Default \
   --sort likes --top 3 --out work/xfetch-run
 ```
 
@@ -140,9 +138,9 @@ python3 .../finder.py \
 | `--publish-history` | Skill 内 `state/published_videos.jsonl` | 已发布历史；命中唯一 ID 时下载前跳过，不进入后续环节 |
 | `--xiaohongshu` | 关 | 小红书禁选过滤：车聚车展、车主故事、特色驾驶场景下载前跳过 |
 | `--auth-file` | 无 | X 专用 `KEY=VALUE` 登录态文件 |
-| `--web-session` | `off` | 显式复用指定浏览器的 Web 登录会话 |
-| `--cookies-file` | 无 | Netscape cookies.txt；可用于 X 和其他 yt-dlp 平台 |
-| `--browser-profile` | 浏览器默认 | 浏览器 Profile，例如 `Default` / `Profile 1` |
+| `--web-session` | `chrome` | 固定复用本机 Chrome 登录态；显式传参仅用于排障 |
+| `--cookies-file` | 无 | Netscape cookies.txt；显式传参时替代固定浏览器会话 |
+| `--browser-profile` | `Default` | 固定使用 Chrome `Default`；显式传参仅用于排障 |
 | `--xfetch` | 自动探测 | xfetch.py 路径 |
 | `--python` | 自动探测 | 跑 xfetch 的解释器（优先 `.venv-xfetch/bin/python`） |
 | `--dry-run` | 关 | 只搜索+排序+报告，不下载 |
@@ -258,13 +256,11 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
-Agent 按 `<out>/xiaohongshu_publish_plan.json` 使用内置浏览器打开小红书创作者平台，自动上传 `video_file`、填写标题正文、逐个添加话题并核验。预演到点击“发布”前停止，不写历史。只有用户明确要求实际发布时，生成计划才加 `--confirm-publish`，浏览器才允许点击“发布”。
+`<out>/xiaohongshu_publish_plan.json` 只用于本地核对，不使用内置浏览器获取登录态，也不上传或写历史。实际执行固定走下方 Chrome `Default` 路径；只有用户明确选择发布或保存草稿后，才生成对应确认计划。
 
-页面明确成功后运行 `xiaohongshu_publisher.py --out work/xfetch-run record --status published`；点击后结果不明时运行 `record --status unconfirmed`，同样阻止重发，不得盲目重试。未登录、验证码和平台风控由用户处理。
+### 固定复用 Chrome Default 小红书登录态
 
-### 直接复用 Chrome 小红书登录态
-
-只有用户明确授权 Chrome 后才使用此路径。先让用户选择发布或保存草稿，为每条入选生成对应 `action` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
+先让用户选择发布或保存草稿，为每条入选生成对应 `action` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
 
 ```bash
 python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
@@ -274,7 +270,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
-`chrome_xiaohongshu.py` 只复制 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，启动独立 Chrome，通过 CDP 上传和填写，使用正常 Chrome 标识，等待无障碍树中的发布按钮真正启用后发送真实鼠标事件。原 Chrome 配置和标签页不被修改，初始化或发布异常时也清理临时配置，Cookie 值不打印、不写入报告。可省略 `--headless` 显示隔离浏览器；`--only <原帖ID>` 只执行一条。
+`chrome_xiaohongshu.py` 固定复制本机 Chrome `Default` 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，启动独立 Chrome，通过 CDP 上传和填写，使用正常 Chrome 标识，等待无障碍树中的发布按钮真正启用后发送真实鼠标事件。原 Chrome 配置和标签页不被修改，初始化或发布异常时也清理临时配置，Cookie 值不打印、不写入报告。`--browser-profile` 默认固定为 `Default`；可省略 `--headless` 显示隔离浏览器，`--only <原帖ID>` 只执行一条。
 
 批量按 manifest 入选顺序执行。填写后复读标题、正文和话题，发布按钮必须处于启用状态。`result_url` 保存发布结果页，`note_url` 只保存真实公开笔记地址，不能把 `/publish/success` 当作分享链接。实测故障、根因和检查清单统一查阅 [小红书 Chrome 发布实测经验与故障手册](references/xiaohongshu-chrome-troubleshooting.md)，修改发布逻辑后按手册完成回归。
 
@@ -283,7 +279,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
 ## Agent 工作流（重要）
 
 1. 用户没有给主题时直接使用 `--auto-topic`，不要追问选题；用户给了主题才从 `--prompt` 提取车型/场景并补充同义检索式。自动模式读取 `topic_plan.json`，手动模式才使用提示词展开规则。
-2. 在用户明确授权的浏览器/Profile 或 cookies.txt 中选择 X 会话；X 由 finder 自动执行 `xfetch auth check` 验证，默认不要读取浏览器。
+2. X 登录态固定使用本机 Chrome `Default`，不要询问浏览器或 Profile，也不要默认改用内置浏览器。finder 自动执行 `xfetch auth check` 验证；只有登录校验失败时，才提示用户在 Chrome `Default` 登录 X，或显式选择 cookies.txt / auth-file 排障。
 3. 运行 finder（先 `--dry-run` 看榜单，由 Agent 检查内容是否对路再真下，无需让人工补选题）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。手动面向小红书必须加 `--xiaohongshu`，自动模式已隐含；禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
 4. 对下载的每条视频做三项核验，并记录每条的结果与淘汰原因：
    - **选题**：按 100 分模型逐项评分，自动模式只最终入选达到 70 分、符合当前系列且不与近期车型重复的视频；互动量不得替代其他评分项。
@@ -291,7 +287,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
    - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。
 5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
-6. 先展示可点击的视频标题供用户预览，再让用户选择“自动发布”或“自动保存草稿”。未选择时只生成本地计划，不上传。发布或草稿动作均要求 AI 披露和版权确认；正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。自动选题不等于授权实际发布。
+6. 先展示可点击的视频标题供用户预览，再让用户选择“自动发布”或“自动保存草稿”。未选择时只生成本地计划，不上传。执行时固定复用 Chrome `Default` 的小红书登录态；发布或草稿动作均要求 AI 披露和版权确认，正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。自动选题不等于授权实际发布。
 7. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。提醒版权与平台条款。若执行了发布，另附发布状态、笔记 URL（如有）和历史文件路径。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
