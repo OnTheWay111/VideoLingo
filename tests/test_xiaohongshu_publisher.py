@@ -262,3 +262,24 @@ def test_publish_and_draft_require_disclosure_and_rights(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     with pytest.raises(ValueError, match="rights_confirmed"):
         xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="draft")
+
+
+def test_publisher_blocks_visual_talking_head_with_neutral_text(tmp_path):
+    item = finalized_output(tmp_path)
+    item["recommendation"] = "Suzuki Cappuccino 展示车头与改装部件。"
+    item["verification"] = {"presentation": "talking_head_explainer"}
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="禁选主题"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+    assert history.records() == []
+
+
+def test_car_only_detail_video_is_not_blocked_as_explainer():
+    item = {
+        "text": "Suzuki Cappuccino stationary exterior and engine bay details",
+        "verification": {"presentation": "car_only"},
+    }
+
+    assert xiaohongshu_publisher.forbidden_topic_match(item) is None

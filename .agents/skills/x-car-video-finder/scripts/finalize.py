@@ -7,6 +7,8 @@ import json
 import re
 from pathlib import Path
 
+from topic_policy import explainer_video_match
+
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
 END_MARKER = "<!-- PUBLISH_TABLES_END -->"
 TABLE_HEADER = "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |"
@@ -142,6 +144,28 @@ def resolve_source(source, tweet_id, suffix, frame_index=None):
     raise ValueError("媒体文件不存在或无法唯一匹配：%s" % source)
 
 
+def reject_explainer_downloads(manifest):
+    allowed = []
+    rejected = manifest.setdefault("rejected", [])
+    for item in manifest.get("downloads", []):
+        match = explainer_video_match(item)
+        if not match:
+            allowed.append(item)
+            continue
+        item["reason"] = "讲解视频禁选：真人出镜、口播或屏幕讲解（匹配“%s”）" % match
+        verification = item.setdefault("verification", {})
+        if isinstance(verification, dict):
+            verification["status"] = "rejected"
+            verification["rejection_policy"] = "explainer_video"
+        rejected.append(item)
+    manifest["downloads"] = allowed
+    stats = manifest.setdefault("stats", {})
+    stats["explainer_rejected"] = sum(
+        1 for item in rejected
+        if (item.get("verification") or {}).get("rejection_policy") == "explainer_video"
+    )
+
+
 def finalize(out_dir, publish_file):
     out_dir = Path(out_dir).resolve()
     manifest_path = out_dir / "manifest.json"
@@ -154,8 +178,11 @@ def finalize(out_dir, publish_file):
     if missing or unknown:
         raise ValueError("发布内容与 manifest 不一致；缺少=%s，多余=%s" % (missing, unknown))
 
+    reject_explainer_downloads(manifest)
     operations = []
-    for group in (manifest.get("downloads", []), manifest.get("rejected", [])):
+    for group_name in ("downloads", "rejected"):
+        group = manifest.get(group_name, [])
+        target_dir = out_dir / ("videos" if group_name == "downloads" else "rejected")
         for number, item in enumerate(group, 1):
             candidate = item["candidate"]
             tweet_id = str(candidate["id"])
@@ -165,7 +192,7 @@ def finalize(out_dir, publish_file):
             video = item["video"]
             source = Path(video["file"]).resolve()
             source = resolve_source(source, tweet_id, source.suffix)
-            target = source.with_name("%d.%s_%s%s" % (number, brand, file_topic, source.suffix))
+            target = target_dir / ("%d.%s_%s%s" % (number, brand, file_topic, source.suffix))
             operation = prepare_rename(source, target)
             if operation:
                 operations.append(operation)
@@ -187,6 +214,9 @@ def finalize(out_dir, publish_file):
             item["ai_disclosure"] = content["ai_disclosure"]
             item["rights_confirmed"] = content["rights_confirmed"]
 
+    for group_name in ("downloads", "rejected"):
+        if manifest.get(group_name):
+            (out_dir / ("videos" if group_name == "downloads" else "rejected")).mkdir(exist_ok=True)
     for source, target in operations:
         source.rename(target)
     manifest["published_at"] = datetime.datetime.now().isoformat(timespec="seconds")

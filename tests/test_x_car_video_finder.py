@@ -360,3 +360,56 @@ def test_manual_mode_still_requires_prompt(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["finder.py"])
     with pytest.raises(SystemExit):
         finder.main()
+
+
+def test_explicit_explainer_candidate_is_filtered_before_download():
+    candidate = publish_candidate("explainer")
+    candidate["text"] = "真人出镜讲解这台 Honda Beat 的售价"
+
+    allowed, skipped = finder.partition_forbidden_topics([candidate])
+
+    assert allowed == []
+    assert skipped[0]["candidate"]["id"] == "explainer"
+    assert "真人讲解、口播或屏幕讲解" in skipped[0]["reason"]
+
+
+def test_finalize_rejects_cappuccino_talking_head_sample(tmp_path):
+    tweet_id = "1948914053335974008"
+    item = publish_item(tmp_path, tweet_id)
+    original_video = Path(item["video"]["file"])
+    item["candidate"]["text"] = (
+        "El legendario Suzuki Cappuccino a la venta en Argentina! "
+        "Qué opinan del precio?"
+    )
+    item["recommendation"] = "视频还讲到 Monster Sport 涡轮套件与 ECU 调校。"
+    item["verification"] = {
+        "status": "accepted",
+        "score": 77,
+        "presentation": "talking_head_explainer",
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    publish_path = tmp_path / "publish.json"
+    publish_path.write_text(json.dumps({
+        tweet_id: {
+            "title": "Cappuccino 轻跑有多好玩？",
+            "body": "这台 Suzuki Cappuccino 的视频还讲到 Monster Sport 涡轮套件。",
+            "brand": "Suzuki",
+            "file_topic": "Cappuccino 改装轻跑",
+            "topics": ["#SuzukiCappuccino", "#JDM"],
+        },
+    }, ensure_ascii=False))
+
+    finalizer.finalize(tmp_path, publish_path)
+
+    saved = json.loads((tmp_path / "manifest.json").read_text())
+    assert saved["downloads"] == []
+    assert saved["stats"]["explainer_rejected"] == 1
+    rejected = saved["rejected"][0]
+    assert rejected["candidate"]["id"] == tweet_id
+    assert rejected["verification"]["status"] == "rejected"
+    assert rejected["verification"]["rejection_policy"] == "explainer_video"
+    assert "讲解视频禁选" in rejected["reason"]
+    assert Path(rejected["video"]["file"]).parent == tmp_path / "rejected"
+    assert Path(rejected["video"]["file"]).is_file()
+    assert not original_video.exists()
+    assert "讲解视频禁选" in (tmp_path / "REPORT.md").read_text()
