@@ -1,10 +1,10 @@
 ---
-name: x-car-video-finder
+name: xcar-xhs
 description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、发布历史下载前去重，以及复用本机 Chrome Default 登录态上传并发布视频。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
-# X 汽车视频搜索与下载（x-car-video-finder）
+# X 汽车视频搜索与下载（xcar-xhs）
 
 把一句自然语言提示词或内置账号策略变成「自动选题计划 → X 检索式 → 发布历史去重 → 汽车相关性过滤 → 排序 → 下载 → 抽帧核验 → 标题正文定稿 → 小红书发布 → 已发布登记」的完整流水线。用户没有给选题时直接使用 `--auto-topic`，不要先追问主题；通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
@@ -44,8 +44,8 @@ DSH 的本地 skill 提供方只扫描下列根（rank 越高优先级越低）�
 
 项目根是最近包含 `.git` 的祖先目录；skill 必须是 `<root>/<name>/SKILL.md` 或 `<root>/<name>.md`，只发现一层。
 
-- 本 skill 当前在 `<项目根>/.agents/skills/x-car-video-finder`，DSH 会话目录会自动收录（本项目内已验证热更新）。
-- Web 编辑器输入 `/` 会列出用户可调用的 skill，直接键入 `/x-car-video-finder 找几条 Cybertruck 越野视频` 即可调用；宿主会把完整指令注入本轮，无需模型再调 `skill` 工具。TUI / ACP 行为一致。
+- 本 skill 当前在 `<项目根>/.agents/skills/xcar-xhs`，DSH 会话目录会自动收录（本项目内已验证热更新）。
+- Web 编辑器输入 `/` 会列出用户可调用的 skill，直接键入 `/xcar-xhs 找几条 Cybertruck 越野视频` 即可调用；宿主会把完整指令注入本轮，无需模型再调 `skill` 工具。TUI / ACP 行为一致。
 - 只想允许 `/` 调用、不让模型自动选：frontmatter 加 `disable-model-invocation: true`；想隐藏 `/` 入口：`user-invocable: false`。
 - 全局安装（所有项目）：把本目录、`web-content-fetcher` 和 `xfetch` 一起复制到 `~/.agents/skills/` 或 `~/.dsh/skills/`。
 - 手改文件后模型目录会自动刷新；若 `/` 菜单没更新，刷新页面、新建会话或重连即可。
@@ -77,7 +77,7 @@ python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth che
 自动选题（无需人工输入主题）：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/finder.py \
+python3 .agents/skills/xcar-xhs/scripts/finder.py \
   --auto-topic --sort likes --top 3 --out work/xfetch-run
 ```
 
@@ -86,13 +86,13 @@ python3 .agents/skills/x-car-video-finder/scripts/finder.py \
 只查看下一期计划、不访问 X：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/topic_planner.py
+python3 .agents/skills/xcar-xhs/scripts/topic_planner.py
 ```
 
 手动提示词仍然可用（自动展开多组检索式）：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/finder.py \
+python3 .agents/skills/xcar-xhs/scripts/finder.py \
   --prompt "找几条 Cybertruck 越野视频，点赞高的优先" \
   --sort likes --top 3 --out work/xfetch-run
 ```
@@ -205,7 +205,7 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
 运行定稿器：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
+python3 .agents/skills/xcar-xhs/scripts/finalize.py \
   --out work/xfetch-run \
   --publish-file work/xfetch-run/publish.json
 ```
@@ -229,11 +229,11 @@ python3 .agents/skills/x-car-video-finder/scripts/finalize.py \
 
 ```bash
 # 自动发布
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 原帖ID --action publish
 
 # 自动保存草稿
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 原帖ID --action draft
 ```
 
@@ -249,12 +249,12 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 
 **硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、山路/公路驾驶、驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。真人出镜讲解、人物分屏口播、销售页或网页截图配合讲解同样禁选，车辆清晰或评分达到 70 分也不能放行。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`（`--auto-topic` 已隐含），明显讲解文字在下载前写入 `topic_skipped`；抽帧后由定稿器移入 `rejected/`，发布器还会最终检查原帖文字、发布文案和画面标注。
 
-**固定历史文件**：`.agents/skills/x-car-video-finder/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。自动模式的实际发布登记会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、品牌和文件主题，供下一次轮动；预演和搜索不消耗期数。
+**固定历史文件**：`.agents/skills/xcar-xhs/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。自动模式的实际发布登记会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、品牌和文件主题，供下一次轮动；预演和搜索不消耗期数。
 
 定稿后生成默认预演计划：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
@@ -265,10 +265,10 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 先让用户选择发布或保存草稿，为每条入选生成对应 `action` 计划并保存到 `<out>/plans_confirmed/<原帖ID>.json`，再运行：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --preflight-only
 
-python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 

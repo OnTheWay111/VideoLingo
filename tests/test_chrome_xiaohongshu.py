@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/xcar-xhs/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 MODULE_PATH = SCRIPTS_DIR / "chrome_xiaohongshu.py"
 SPEC = importlib.util.spec_from_file_location("chrome_xiaohongshu", MODULE_PATH)

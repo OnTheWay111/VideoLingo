@@ -64,7 +64,7 @@
 历史文件固定为：
 
 ```text
-.agents/skills/x-car-video-finder/state/published_videos.jsonl
+.agents/skills/xcar-xhs/state/published_videos.jsonl
 ```
 
 每行一条 JSON，至少保存 `source_id`（X 原帖唯一 ID）、`title`、`source_url`、`platform`、`status`、`recorded_at`。`published` 和 `unconfirmed` 都视为已占用，禁止再次发布。自动选题发布还会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、`topic_strategy_version`、`brand` 和 `file_topic`，作为后续轮动及重复检查的输入。可用 `--history-file` 或环境变量 `X_CAR_PUBLISH_HISTORY_FILE` 在测试时指定隔离文件，正式使用不要改路径。
@@ -72,7 +72,7 @@
 如果以前已经手动发布过，先登记历史；唯一 ID 和标题都提供更可靠。要保证在下载前跳过必须登记 `source_id`；只有标题的历史记录会在生成发布计划时兜底拦截：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/publish_history.py add \
+python3 .agents/skills/xcar-xhs/scripts/publish_history.py add \
   --source-id 2075618551918985363 \
   --title "Apollo Evo 空气动力学细节" \
   --source-url "https://x.com/fosgoodwood/status/2075618551918985363"
@@ -81,7 +81,7 @@ python3 .agents/skills/x-car-video-finder/scripts/publish_history.py add \
 查询历史：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/publish_history.py check \
+python3 .agents/skills/xcar-xhs/scripts/publish_history.py check \
   --source-id 2075618551918985363
 ```
 
@@ -92,7 +92,7 @@ python3 .agents/skills/x-car-video-finder/scripts/publish_history.py check \
 必须先完成 `finalize.py`，确保入选记录已有标题、正文、话题和最终视频路径。默认只生成预演计划，不发布：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363
 ```
 
@@ -102,11 +102,11 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 
 ```bash
 # 自动发布
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363 --action publish
 
 # 自动保存草稿
-python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
+python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan --tweet-id 2075618551918985363 --action draft
 ```
 
@@ -119,10 +119,10 @@ python3 .agents/skills/x-car-video-finder/scripts/xiaohongshu_publisher.py \
 把各条确认计划保存为 `<out>/plans_confirmed/<原帖ID>.json`，然后先验证会话，再逐条执行：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --preflight-only
 
-python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
+python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
@@ -143,7 +143,7 @@ python3 .agents/skills/x-car-video-finder/scripts/chrome_xiaohongshu.py \
 如果点击后结果不确定，历史先记 `unconfirmed`。必须到创作者后台确认实际未发布后，才能用以下命令更正为 `failed` 并重试；不得仅因超时就强行解锁：
 
 ```bash
-python3 .agents/skills/x-car-video-finder/scripts/publish_history.py resolve \
+python3 .agents/skills/xcar-xhs/scripts/publish_history.py resolve \
   --source-id 2075618551918985363 \
   --title "实际未发布的标题" \
   --reason "后台确认未发布的核验依据"

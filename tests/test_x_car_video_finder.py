@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/xcar-xhs/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 MODULE_PATH = SCRIPTS_DIR / "finder.py"
 SPEC = importlib.util.spec_from_file_location("x_car_video_finder", MODULE_PATH)

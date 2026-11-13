@@ -7,7 +7,7 @@ import pytest
 
 
 SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/web-content-fetcher/scripts"
-CAR_SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+CAR_SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/xcar-xhs/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 sys.path.insert(0, str(CAR_SCRIPTS_DIR))
 

@@ -3,7 +3,7 @@
 
 只用于本机、只读浏览器自己的 Cookie 库（复制一份临时副本），
 借助钥匙串里的 "<Browser> Safe Storage" 密钥解密，最后写成一个
-KEY=VALUE 文件供 xfetch / x-car-video-finder 使用。不会打印 cookie 值。
+KEY=VALUE 文件供 xfetch / xcar-xhs 使用。不会打印 cookie 值。
 
 用法:
   python3 auth_from_chrome.py --out /tmp/xfetch-auth.env

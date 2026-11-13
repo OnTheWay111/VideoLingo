@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 
-SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/x-car-video-finder/scripts"
+SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/xcar-xhs/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 import publish_history
 import xiaohongshu_publisher
