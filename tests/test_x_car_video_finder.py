@@ -304,6 +304,24 @@ def test_auto_topic_plan_enforces_content_mix_and_five_episode_series():
     assert all("-Tesla" not in query for plan in plans for query in plan["queries"])
 
 
+def test_auto_topic_plan_includes_mountain_driving_series():
+    records = [{
+        "source_id": str(index),
+        "status": "published",
+        "topic_pillar": "visual_experiment" if index < 10 else "rare_models",
+    } for index in range(24)]
+
+    plan = topic_planner.build_topic_plan(records)
+
+    assert plan["strategy_version"] == 4
+    assert plan["pillar"] == "visual_experiment"
+    assert plan["series_id"] == "mountain_driving"
+    assert plan["series_label"] == "山路驾驶场景"
+    assert any('"mountain road"' in query for query in plan["queries"])
+    assert any('"touge POV"' in query for query in plan["queries"])
+    assert all('-"mountain road"' not in query for query in plan["queries"])
+
+
 def test_auto_topic_plan_is_stable_until_publication_is_recorded():
     initial = topic_planner.build_topic_plan([])
 

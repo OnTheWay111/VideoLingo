@@ -7,7 +7,7 @@ from pathlib import Path
 
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 3
+STRATEGY_VERSION = 4
 SCORE_THRESHOLD = 70
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
@@ -97,6 +97,15 @@ PILLARS = {
                     '("flying car concept" OR "amphibious car" OR "experimental vehicle")',
                     '("one-off concept" OR "concept prototype" OR "rolling prototype")',
                     '("unusual car design" OR "strange car concept" OR "radical concept car")',
+                ),
+            },
+            {
+                "id": "mountain_driving",
+                "label": "山路驾驶场景",
+                "query_groups": (
+                    '("mountain road" OR "mountain pass" OR "mountain drive") (car OR supercar OR JDM)',
+                    '("touge" OR "canyon drive" OR "canyon road") (car OR supercar OR JDM)',
+                    '("mountain road POV" OR "mountain drive POV" OR "touge POV") (car OR supercar OR JDM)',
                 ),
             },
         ),

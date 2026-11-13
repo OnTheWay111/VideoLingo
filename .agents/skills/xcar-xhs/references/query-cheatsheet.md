@@ -34,7 +34,7 @@
 ## 提示词 → 检索式 的展开套路
 
 1. **主题词优先**：提示词里的车型/品牌先成一组，如 `("cybertruck" OR "tesla")`。
-2. **场景词补充**：越野加 `offroad OR desert`，超跑加 `POV OR exhaust OR "car spotting"`，车评加 `review OR "test drive"`。
+2. **场景词补充**：越野加 `offroad OR desert`，山路驾驶加 `"mountain road" OR "mountain pass" OR touge`，超跑加 `POV OR exhaust OR "car spotting"`，车评加 `review OR "test drive"`。
 3. **对照组**：固定补 2 组泛汽车检索（车聚/车展、车评/试驾），防止主题词太窄没结果。
 4. **中文兜底**：X 上中文车内容少，保留一组 `(汽车 OR 越野 OR 超跑)` 即可，其他用英文。
 5. **过滤条件**：默认 `filter:media` + `min_faves`（建议 200–1000）+ `since:`（近 1–3 个月），并加 `-crypto -nft -giveaway` 排除垃圾内容。

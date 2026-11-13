@@ -81,7 +81,7 @@ python3 .agents/skills/xcar-xhs/scripts/finder.py \
   --auto-topic --sort likes --top 3 --out work/xfetch-run
 ```
 
-`--auto-topic` 按发布历史执行 60% 稀有车型、25% 改装机械、15% 视觉实验的 20 条轮动，同一系列连续规划 5 期，并自动生成带禁选排除词的检索式。它隐含 `--xiaohongshu`，不能与 `--prompt` 或 `--query` 同用。重复运行在实际发布登记前会保持同一计划，避免预演消耗期数。
+`--auto-topic` 按发布历史执行 60% 稀有车型、25% 改装机械、15% 视觉实验（含山路驾驶场景）的 20 条轮动，同一系列连续规划 5 期，并自动生成带禁选排除词的检索式。它隐含 `--xiaohongshu`，不能与 `--prompt` 或 `--query` 同用。重复运行在实际发布登记前会保持同一计划，避免预演消耗期数。
 
 只查看下一期计划、不访问 X：
 
@@ -102,8 +102,8 @@ python3 .agents/skills/xcar-xhs/scripts/finder.py \
 ```bash
 python3 .../finder.py \
   --prompt "超跑山路 POV" \
-  --query '(supercar OR "car spotting") POV filter:media min_faves:1000' \
-  --query '("car meet" OR "car show") filter:media min_faves:500' \
+  --query '(supercar OR sportscar) ("mountain road" OR "mountain pass" OR touge) filter:media min_faves:1000' \
+  --query '("mountain road POV" OR "mountain drive POV" OR "touge POV") filter:media min_faves:500' \
   --sort replies --top 3 --since 2026-09-01 --limit 25
 ```
 
@@ -137,7 +137,7 @@ python3 .../finder.py \
 | `--delay` | `1.5` | 翻页间隔秒数 |
 | `--out` | `work/xfetch-run` | 输出根目录 |
 | `--publish-history` | Skill 内 `state/published_videos.jsonl` | 已发布历史；命中唯一 ID 时下载前跳过，不进入后续环节 |
-| `--xiaohongshu` | 关 | 小红书禁选过滤：车聚车展、车主故事、特色驾驶场景下载前跳过 |
+| `--xiaohongshu` | 关 | 小红书禁选过滤：车聚车展、车主故事、非山路特色驾驶场景下载前跳过；山路驾驶（含山路 POV）可入选 |
 | `--auth-file` | 无 | X 专用 `KEY=VALUE` 登录态文件 |
 | `--web-session` | `chrome` | 固定复用本机 Chrome 登录态；显式传参仅用于排障 |
 | `--cookies-file` | 无 | Netscape cookies.txt；显式传参时替代固定浏览器会话 |
@@ -243,11 +243,11 @@ python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
 
 ## 小红书选题、去重与自动发布
 
-完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号承诺为“每天认识一台国内少见的车”，以关注转化而非单条点赞为目标：60% 稀有车型连续图鉴、25% 改装与机械反差、15% 视觉实验选题。按系列化潜力、前 3 秒画面、稀缺性、收藏分享、讨论空间和原帖互动评分；标题 1–20 字，正文说明车型和核心看点，话题 2–6 个。
+完整规则见 [小红书汽车账号选题与发布手册](references/xiaohongshu-playbook.md)。账号承诺为“每天认识一台国内少见的车”，以关注转化而非单条点赞为目标：60% 稀有车型连续图鉴、25% 改装与机械反差、15% 视觉实验选题（含山路驾驶场景）。按系列化潜力、前 3 秒画面、稀缺性、收藏分享、讨论空间和原帖互动评分；标题 1–20 字，正文说明车型和核心看点，话题 2–6 个。
 
 **自动选题不是自动放行素材**：`topic_planner.py` 只负责栏目、系列、期数和检索式。Agent 必须结合原帖文字、车型信息和抽帧按 100 分模型评分，核验后低于 70 分、不符合当前系列或与近期车型重复的候选不得进入最终入选；不足时递补候选，不能降低禁选标准。`topic_plan.json` 中的 `recent_titles` 和 `recent_brands` 用于辅助避免重复，不能代替车型核验。
 
-**硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、山路/公路驾驶、驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。真人出镜讲解、人物分屏口播、销售页或网页截图配合讲解同样禁选，车辆清晰或评分达到 70 分也不能放行。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`（`--auto-topic` 已隐含），明显讲解文字在下载前写入 `topic_skipped`；抽帧后由定稿器移入 `rejected/`，发布器还会最终检查原帖文字、发布文案和画面标注。
+**山路驾驶场景已放开**：山路驾驶、山腰/山口道路、Touge、峡谷道路及相应驾驶 POV 均可作为视频主题，按正常评分、画面和版权流程入选。**其他硬性禁选**：海外玩车现场不是栏目；地下车聚、车展、车主故事、非山路的公路驾驶或驾驶 POV 等特色驾驶场景一律不允许，即使高赞也不得入选。真人出镜讲解、人物分屏口播、销售页或网页截图配合讲解同样禁选，车辆清晰或评分达到 70 分也不能放行。不能通过改写标题、正文或话题规避。面向小红书运行 finder 必须加 `--xiaohongshu`（`--auto-topic` 已隐含），明显讲解文字在下载前写入 `topic_skipped`；抽帧后由定稿器移入 `rejected/`，发布器还会最终检查原帖文字、发布文案和画面标注。
 
 **固定历史文件**：`.agents/skills/xcar-xhs/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`，不下载、不抽帧、不进入发布环节；发布计划还会按唯一 ID 和标题再次检查。自动模式的实际发布登记会保存 `topic_pillar`、`topic_series_id`、`topic_series_episode`、品牌和文件主题，供下一次轮动；预演和搜索不消耗期数。
 
@@ -288,7 +288,7 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
 4. 对下载的每条视频做三项核验，并记录每条的结果与淘汰原因：
    - **选题**：按 100 分模型逐项评分，自动模式只最终入选达到 70 分、符合当前系列且不与近期车型重复的视频；互动量不得替代其他评分项。
    - **时长**：默认素材上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。自动计划的 15–45/20–60 秒是推荐成片时长，不是放宽素材上限的理由。
-   - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。每条必须写入 `verification.presentation`：纯车辆细节为 `car_only`，真人出镜或人物分屏讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`。后两类即使车辆清晰、原帖高赞或评分达到 70 分也必须淘汰。
+   - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。每条必须写入 `verification.presentation`：纯车辆细节或山路驾驶画面为 `car_only`，真人出镜或人物分屏讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`。后两类即使车辆清晰、原帖高赞或评分达到 70 分也必须淘汰。
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。运行 `finalize.py` 时会根据画面标注和明显讲解文字自动完成讲解视频的移动与淘汰记录，不能只把分数调低后仍留在入选清单。
 5. 为最终入选、淘汰记录撰写标题、推荐正文、原品牌、文件主题和具体推荐话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字。
 6. 先展示可点击的视频标题供用户预览，再让用户选择“自动发布”或“自动保存草稿”。未选择时只生成本地计划，不上传。执行时固定复用 Chrome `Default` 的小红书登录态；发布或草稿动作均要求 AI 披露和版权确认，正式发布在两条成功记录之间随机等待 1–10 分钟，结果不明时停止后续操作。自动选题不等于授权实际发布。

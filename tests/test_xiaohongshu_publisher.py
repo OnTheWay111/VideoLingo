@@ -194,10 +194,17 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
 
 
 @pytest.mark.parametrize("text", [
-    "东京地下车聚实拍", "车主故事：他的第一台车", "山路驾驶 POV", "Goodwood Festival of Speed",
+    "东京地下车聚实拍", "车主故事：他的第一台车", "普通公路驾驶 POV", "Goodwood Festival of Speed",
 ])
 def test_publisher_rejects_forbidden_topics(text):
     assert xiaohongshu_publisher.forbidden_topic_match({"text": text})
+
+
+@pytest.mark.parametrize("text", [
+    "山路驾驶 POV", "Porsche 911 mountain road driving POV", "Honda S660 touge drive",
+])
+def test_publisher_allows_mountain_driving_topics(text):
+    assert xiaohongshu_publisher.forbidden_topic_match({"text": text}) is None
 
 
 def test_publisher_blocks_forbidden_topic_even_with_neutral_title(tmp_path):

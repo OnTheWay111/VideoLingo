@@ -4,10 +4,20 @@
 import re
 
 FORBIDDEN_TOPIC_RE = re.compile(
-    r"(?i)(?:海外玩车现场|地下车聚|车聚|车展|汽车展|车主故事|特色驾驶场景|山路驾驶|公路驾驶|"
-    r"第一视角驾驶|驾驶\s*POV|\bcar\s*(?:meet|show)\b|\bauto\s+show\b|\bmotor\s+show\b|"
-    r"\bowner(?:'s)?\s+story\b|\bdriving\s+pov\b|\bpov\s+drive\b|\broad\s+trip\b|"
-    r"\bgoodwood\b|\bfestival\s+of\s+speed\b|\bsema\b)"
+    r"(?i)(?:海外玩车现场|地下车聚|车聚|车展|汽车展|车主故事|"
+    r"\bcar\s*(?:meet|show)\b|\bauto\s+show\b|\bmotor\s+show\b|"
+    r"\bowner(?:'s)?\s+story\b|\bgoodwood\b|\bfestival\s+of\s+speed\b|\bsema\b)"
+)
+
+DRIVING_TOPIC_RE = re.compile(
+    r"(?i)(?:特色驾驶场景|公路驾驶|第一视角驾驶|驾驶\s*POV|"
+    r"\bdriving\s+pov\b|\bpov\s+drive\b|\broad\s+trip\b)"
+)
+
+MOUNTAIN_DRIVING_RE = re.compile(
+    r"(?i)(?:山路|峠|\btouge\b|\bmountain[\s_-]*(?:road|pass|drive|driving)\b|"
+    r"\b(?:road|drive|driving)[\s_-]*(?:in|on|through)?[\s_-]*(?:the[\s_-]*)?mountains?\b|"
+    r"\bcanyon[\s_-]*(?:road|drive|driving)\b)"
 )
 
 EXPLAINER_RE = re.compile(
@@ -42,12 +52,20 @@ def explainer_video_match(item):
     return match.group(0) if match else None
 
 
-def forbidden_topic_match(item):
+def forbidden_scene_match(item):
     haystack = "\n".join(str(value) for value in content_values(item) if value)
     match = FORBIDDEN_TOPIC_RE.search(haystack)
     if match:
         return match.group(0)
-    return explainer_video_match(item)
+    if not MOUNTAIN_DRIVING_RE.search(haystack):
+        match = DRIVING_TOPIC_RE.search(haystack)
+        if match:
+            return match.group(0)
+    return None
+
+
+def forbidden_topic_match(item):
+    return forbidden_scene_match(item) or explainer_video_match(item)
 
 
 def partition_forbidden_topics(candidates):
@@ -60,12 +78,11 @@ def partition_forbidden_topics(candidates):
                 "reason": "小红书禁选：真人讲解、口播或屏幕讲解视频（匹配“%s”）" % explainer,
             })
             continue
-        haystack = "\n".join(str(value) for value in content_values(candidate) if value)
-        match = FORBIDDEN_TOPIC_RE.search(haystack)
-        if match:
+        forbidden = forbidden_scene_match(candidate)
+        if forbidden:
             skipped.append({
                 "candidate": candidate,
-                "reason": "小红书禁选：海外玩车现场、车聚车展、车主故事或特色驾驶场景（匹配“%s”）" % match.group(0),
+                "reason": "小红书禁选：海外玩车现场、车聚车展、车主故事或非山路特色驾驶场景（匹配“%s”）" % forbidden,
             })
         else:
             allowed.append(candidate)

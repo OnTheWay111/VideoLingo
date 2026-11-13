@@ -621,7 +621,7 @@ def build_parser():
     ap.add_argument("--publish-history", default=str(default_history_path()),
                     help="已发布视频 JSONL；命中唯一 ID 时在下载前跳过")
     ap.add_argument("--xiaohongshu", action="store_true",
-                    help="启用小红书选题规则，车聚车展、车主故事和特色驾驶场景下载前跳过")
+                    help="启用小红书选题规则，车聚车展、车主故事和非山路特色驾驶场景下载前跳过")
     ap.add_argument("--auth-file", default=None)
     ap.add_argument("--xfetch", default=None)
     ap.add_argument("--python", default=None)
