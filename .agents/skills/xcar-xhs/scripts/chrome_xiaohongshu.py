@@ -236,6 +236,18 @@ class ChromeSession:
         self.evaluate("document.querySelector(%s).focus()" % escaped)
         self.call("Input.insertText", {"text": text})
 
+    def dismiss_topic_suggestions(self):
+        for event_type in ("keyDown", "keyUp"):
+            self.call("Input.dispatchKeyEvent", {
+                "type": event_type, "key": "Escape", "code": "Escape",
+                "windowsVirtualKeyCode": 27,
+            })
+
+    def topic_suggestions_visible(self):
+        return bool(self.evaluate(
+            "Array.from(document.querySelectorAll('*')).some(element => "
+            "(element.innerText || '').trim() === '新建话题' && element.offsetParent !== null)"))
+
     def verify_content(self, plan):
         title = self.evaluate("document.querySelector('input[placeholder*=标题]').value")
         if title != plan["title"]:
@@ -243,8 +255,10 @@ class ChromeSession:
         body = self.evaluate(
             "Array.from(document.querySelectorAll('textarea,div[contenteditable=true]'))"
             ".map(element => element.innerText || element.value || '').join('\\n')") or ""
+        normalized_body = " ".join(body.split())
         expected = [plan["body"][:30], *plan["topics"]]
-        missing = [value for value in expected if value and value not in body]
+        missing = [value for value in expected
+                   if value and " ".join(value.split()) not in normalized_body]
         if missing:
             raise RuntimeError("正文或话题复核不一致，未点击发布：%s" % "、".join(missing))
 
@@ -270,7 +284,10 @@ class ChromeSession:
     def wait_for_upload(self, button_name="发布"):
         deadline = time.time() + self.timeout
         while time.time() < deadline:
-            if self.editor_present() and self.publish_enabled(button_name):
+            state = self.page_state()
+            uploading = any(value in state.get("text", "") for value in ("上传中", "视频上传中"))
+            if (self.editor_present() and self.publish_enabled(button_name) and not uploading
+                    and not self.topic_suggestions_visible()):
                 return
             time.sleep(2)
         raise RuntimeError("视频上传或转码等待超时，未执行后续操作")
@@ -306,6 +323,7 @@ class ChromeSession:
         self.insert_text("input[placeholder*=标题]", plan["title"])
         body_selector = "textarea[placeholder*=描述], div[contenteditable=true]"
         self.insert_text(body_selector, plan["full_text"])
+        self.dismiss_topic_suggestions()
         self.verify_content(plan)
         self.wait_for_upload("暂存离开" if action == "draft" else "发布")
         self.screenshot(Path(out_dir) / "browser" / ("%s_before.png" % plan["source_id"]))

@@ -170,6 +170,21 @@ def test_verify_content_rechecks_title_body_and_topics():
         session.verify_content(plan)
 
 
+def test_verify_content_tolerates_contenteditable_paragraph_spacing():
+    session = chrome.ChromeSession(headless=True)
+    plan = {
+        "title": "雨中 NSX，跳灯太经典",
+        "body": "本田 NSX 是 90 年代日本跑车的代表之一。\n中置后驱布局、经典跳灯和低趴车身，在雨里更有辨识度。",
+        "topics": ["#本田NSX", "#JDM"],
+    }
+    page_text = plan["body"].replace("\n", "\n\n") + "\n" + " ".join(plan["topics"])
+    session.evaluate = lambda expression: (
+        plan["title"] if expression.endswith(".value") else page_text
+    )
+
+    session.verify_content(plan)
+
+
 def test_enter_failure_cleans_temporary_profile(tmp_path):
     session = chrome.ChromeSession(headless=True)
     session.work = str(tmp_path / "temporary-profile")
@@ -250,12 +265,40 @@ def test_draft_success_requires_saved_state_or_nonzero_draft_count():
     assert not chrome.draft_success("草稿箱(0)")
 
 
+def test_dismiss_topic_suggestions_sends_escape():
+    session = chrome.ChromeSession(headless=True)
+    calls = []
+    session.call = lambda method, params=None: calls.append((method, params))
+
+    session.dismiss_topic_suggestions()
+
+    assert [params["key"] for method, params in calls
+            if method == "Input.dispatchKeyEvent"] == ["Escape", "Escape"]
+
+
 def test_wait_for_upload_uses_action_specific_button():
     session = chrome.ChromeSession(headless=True)
     session.editor_present = lambda: True
+    session.page_state = lambda: {"text": "视频文件 上传完成"}
+    session.topic_suggestions_visible = lambda: False
     names = []
     session.publish_enabled = lambda name: names.append(name) or True
 
     session.wait_for_upload("暂存离开")
 
     assert names == ["暂存离开"]
+
+
+def test_wait_for_upload_blocks_while_progress_is_visible(monkeypatch):
+    session = chrome.ChromeSession(headless=True)
+    session.editor_present = lambda: True
+    session.publish_enabled = lambda name: True
+    session.topic_suggestions_visible = lambda: False
+    states = iter([{"text": "视频文件 上传中 0%"}, {"text": "视频文件 上传完成"}])
+    session.page_state = lambda: next(states)
+    monkeypatch.setattr(chrome.time, "sleep", lambda seconds: None)
+
+    session.wait_for_upload()
+
+    with pytest.raises(StopIteration):
+        session.page_state()
