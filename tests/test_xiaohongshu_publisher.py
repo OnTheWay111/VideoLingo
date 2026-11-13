@@ -112,6 +112,8 @@ def test_dry_run_plan_cannot_be_recorded_as_published(tmp_path):
 
     assert plan["status"] == "ready"
     assert plan["confirm_publish"] is False
+    assert plan["publish_url"] == (
+        "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video")
     assert Path(plan["video_file"]).is_file()
     with pytest.raises(ValueError, match="预演计划"):
         xiaohongshu_publisher.record_result(tmp_path, history)

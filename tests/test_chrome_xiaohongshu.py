@@ -27,6 +27,19 @@ def test_login_page_detection():
     assert not chrome.login_page("上传视频", "https://creator.xiaohongshu.com/publish/publish")
 
 
+def test_navigate_publish_uses_direct_video_url():
+    session = chrome.ChromeSession(headless=True)
+    calls = []
+    session.call = lambda method, params=None: calls.append((method, params))
+    session.page_state = lambda: {"text": "上传视频", "url": chrome.PUBLISH_URL}
+
+    session.navigate_publish()
+
+    assert calls == [("Page.navigate", {
+        "url": "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video",
+    })]
+
+
 def test_publish_success_requires_explicit_success_state():
     assert chrome.publish_success("笔记发布成功", "https://creator.xiaohongshu.com/publish")
     assert chrome.publish_success("", "https://creator.xiaohongshu.com/creator/notes")

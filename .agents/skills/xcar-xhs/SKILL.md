@@ -272,6 +272,8 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
+发布导航直接访问 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`，不经过创作者首页或菜单跳转；发布计划中的 `publish_url` 使用同一地址。
+
 `chrome_xiaohongshu.py` 固定复制本机 Chrome `Default` 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，启动独立 Chrome，通过 CDP 上传和填写，使用正常 Chrome 标识，等待无障碍树中的发布按钮真正启用后发送真实鼠标事件。原 Chrome 配置和标签页不被修改，初始化或发布异常时也清理临时配置，Cookie 值不打印、不写入报告。`--browser-profile` 默认固定为 `Default`；可省略 `--headless` 显示隔离浏览器，`--only <原帖ID>` 只执行一条。
 
 批量按 manifest 入选顺序执行。填写后复读标题、正文和话题，发布按钮必须处于启用状态。`result_url` 保存发布结果页，`note_url` 只保存真实公开笔记地址，不能把 `/publish/success` 当作分享链接。实测故障、根因和检查清单统一查阅 [小红书 Chrome 发布实测经验与故障手册](references/xiaohongshu-chrome-troubleshooting.md)，修改发布逻辑后按手册完成回归。

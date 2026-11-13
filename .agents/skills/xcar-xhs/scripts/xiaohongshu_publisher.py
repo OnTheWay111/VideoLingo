@@ -10,7 +10,7 @@ from pathlib import Path
 from publish_history import PublishedHistory, default_draft_history_path, default_history_path
 from topic_policy import forbidden_topic_match
 
-PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video"
 ACTIONS = ("preview", "draft", "publish")
 
 

@@ -130,7 +130,7 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
 
 脚本自动完成以下动作，不需要 Playwright 或 Selenium：
 
-1. 打开 `https://creator.xiaohongshu.com/publish/publish?source=official`。若出现短信登录页，让用户在本机 Chrome `Default` 完成登录，不能代替用户接收或猜测验证码。
+1. 直接打开 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`，不经过创作者首页或菜单跳转。若出现短信登录页，让用户在本机 Chrome `Default` 完成登录，不能代替用户接收或猜测验证码。
 2. 上传计划里的 `video_file`，等待编辑页出现并确认上传完成，不能在上传进行中点击发布。
 3. 填入 `title` 与 `body`，逐个添加 `topics`，再复读标题、正文和话题，核对没有串行、重复或误选。
 4. 若 `confirm_publish=false`，在点击“发布”前停止，不写历史。

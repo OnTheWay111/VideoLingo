@@ -21,7 +21,7 @@ from xiaohongshu_publisher import record_draft, record_result
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_DATA = "~/Library/Application Support/Google/Chrome"
-PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video"
 
 
 def free_port():
