@@ -300,8 +300,8 @@ def test_auto_topic_plan_enforces_content_mix_and_five_episode_series():
     assert len({plan["series_id"] for plan in rare[5:10]}) == 1
     assert rare[0]["series_id"] != rare[5]["series_id"]
     assert all(plan["score_threshold"] == 70 for plan in plans)
-    assert all('-"car meet"' in query and "-Tesla" in query
-               for plan in plans for query in plan["queries"])
+    assert all('-"car meet"' in query for plan in plans for query in plan["queries"])
+    assert all("-Tesla" not in query for plan in plans for query in plan["queries"])
 
 
 def test_auto_topic_plan_is_stable_until_publication_is_recorded():

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 2
+STRATEGY_VERSION = 3
 SCORE_THRESHOLD = 70
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
@@ -26,7 +26,7 @@ SCORE_RUBRIC = {
 }
 NEGATIVE_FILTERS = (
     '-"car meet" -"car show" -"auto show" -"owner story" -"driving POV" '
-    '-"road trip" -Goodwood -SEMA -Tesla -crypto -nft -giveaway'
+    '-"road trip" -Goodwood -SEMA -crypto -nft -giveaway'
 )
 PILLARS = {
     "rare_models": {
