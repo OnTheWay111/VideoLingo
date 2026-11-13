@@ -1,3 +1,5 @@
+import copy
+import datetime
 import importlib.util
 import json
 import sys
@@ -9,6 +11,9 @@ import pytest
 
 SCRIPTS_DIR = Path(__file__).parents[1] / ".agents/skills/xcar-xhs/scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+import content_policy
+import note_metrics
+import publication_queue
 import publish_history
 import xiaohongshu_publisher
 
@@ -32,7 +37,7 @@ def candidate(tweet_id):
     }
 
 
-def finalized_output(tmp_path, tweet_id="123", title="罕见跑车亮相"):
+def finalized_output(tmp_path, tweet_id="123", title="S660 的 660cc 在哪？"):
     video = tmp_path / "videos" / "clip.mp4"
     video.parent.mkdir()
     video.write_bytes(b"video")
@@ -40,7 +45,22 @@ def finalized_output(tmp_path, tweet_id="123", title="罕见跑车亮相"):
         "candidate": candidate(tweet_id),
         "video": {"file": str(video), "duration": 30, "width": 1920, "height": 1080},
         "title": title,
-        "recommendation": "这台罕见跑车在海外活动中亮相，展示独特的车身设计。",
+        "recommendation": "这台 Honda S660 的 660cc 发动机位于座椅后方，视频展示了对应结构。",
+        "brand": "Honda",
+        "model": "S660",
+        "modification_project": "",
+        "title_detail": "660cc",
+        "verifiable_fact": "Honda S660 的 660cc 发动机位于座椅后方",
+        "fact_source": "https://example.com/honda-s660",
+        "discussion_question": "你更想看哪种机械布局？",
+        "score": 80,
+        "score_breakdown": {
+            "first_three_seconds": 22,
+            "knowledge_point": 22,
+            "save_value": 16,
+            "discussion_question": 10,
+            "recent_diversity": 10,
+        },
         "topics": ["#罕见车型", "#汽车文化"],
         "ai_disclosure": "选题、素材初筛及文字由 AI 辅助整理。",
     }
@@ -162,9 +182,8 @@ def test_successful_record_blocks_future_plan(tmp_path):
     assert receipt["status"] == "published"
     assert receipt["result_url"].endswith("/publish/success")
     assert history.check(source_id="123")["note_url"].endswith("note1")
-    skipped = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
-    assert skipped["status"] == "skipped"
-    assert skipped["reason"] == "already_published"
+    with pytest.raises(ValueError, match="今天已经发布过一条"):
+        xiaohongshu_publisher.build_plan(tmp_path, None, history)
 
 
 def test_publish_plan_blocks_new_manifest_with_fewer_than_three_selected(tmp_path):
@@ -203,6 +222,7 @@ def test_main_skips_published_and_forbidden_topics_before_download(tmp_path, mon
     out = tmp_path / "out"
     monkeypatch.setattr(sys, "argv", ["finder.py", "--prompt", "汽车", "--out", str(out),
                                       "--publish-history", str(history.path), "--top", "1",
+                                      "--min-likes", "1000", "--min-reposts", "100",
                                       "--xiaohongshu"])
     monkeypatch.setattr(finder, "session_summary", lambda args: {})
     monkeypatch.setattr(finder, "resolve_xfetch", lambda value: "xfetch")
@@ -338,3 +358,161 @@ def test_car_only_detail_video_is_not_blocked_as_explainer():
     }
 
     assert xiaohongshu_publisher.forbidden_topic_match(item) is None
+
+
+def finalized_batch(tmp_path):
+    first = finalized_output(tmp_path, "100", "Honda S660 的 660cc")
+    items = [first]
+    for source_id, brand, model, score in (
+        ("200", "BMW", "Z1", 92),
+        ("300", "Toyota", "Sera", 85),
+    ):
+        item = copy.deepcopy(first)
+        item["candidate"] = candidate(source_id)
+        item["title"] = "%s %s 的 660cc" % (brand, model)
+        item["brand"] = brand
+        item["model"] = model
+        item["score"] = score
+        item["score_breakdown"] = {
+            "first_three_seconds": 25 if score == 92 else 23,
+            "knowledge_point": 25 if score == 92 else 23,
+            "save_value": 20 if score == 92 else 18,
+            "discussion_question": 11,
+            "recent_diversity": 11 if score == 92 else 10,
+        }
+        items.append(item)
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "minimum_selected": 3, "selection_target": 3, "downloads": items,
+    }, ensure_ascii=False))
+    return items
+
+
+def test_three_verified_items_enqueue_but_only_highest_scores_publish_each_day(tmp_path):
+    finalized_batch(tmp_path)
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    queue = publication_queue.PublicationQueue(history_path=history.path)
+
+    plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+
+    assert plan["source_id"] == "200"
+    assert plan["score"] == 92
+    assert [(entry["source_id"], entry["status"]) for entry in queue.records()] == [
+        ("100", "queued"), ("200", "planned"), ("300", "queued"),
+    ]
+    xiaohongshu_publisher.save_plan(tmp_path, plan)
+    xiaohongshu_publisher.record_result(
+        tmp_path, history, note_url="https://www.xiaohongshu.com/explore/note200", queue=queue)
+
+    with pytest.raises(ValueError, match="今天已经发布过一条"):
+        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+
+    tomorrow = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+    next_plan = xiaohongshu_publisher.build_plan(
+        tmp_path, None, history, queue=queue, now=tomorrow)
+    assert next_plan["source_id"] == "300"
+    assert next_plan["score"] == 85
+
+
+def test_daily_selection_defers_same_brand_as_previous_note(tmp_path):
+    finalized_batch(tmp_path)
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    queue = publication_queue.PublicationQueue(history_path=history.path)
+    yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
+    history.add("old", "旧 BMW", status="published", brand="BMW", model="M1",
+                published_at=yesterday, recorded_at=yesterday,
+                note_url="https://www.xiaohongshu.com/explore/old")
+
+    plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+
+    assert plan["source_id"] == "300"
+    assert plan["brand"] == "Toyota"
+    assert queue.records()[1]["status"] == "queued"
+
+
+def test_same_model_and_same_project_are_duplicates_even_from_other_posts():
+    now = datetime.datetime(2026, 11, 13, tzinfo=datetime.timezone.utc)
+    history = [{
+        "source_id": "old", "title": "迈凯伦转子", "status": "published",
+        "brand": "迈凯伦", "model": "720S", "modification_project": "转子发动机移植",
+        "recorded_at": "2026-11-01T00:00:00+00:00",
+    }]
+
+    same_model = content_policy.content_duplicate(
+        content_policy.content_identity({"brand": "McLaren", "model": "720S"}), history, now=now)
+    same_project = content_policy.content_duplicate(
+        content_policy.content_identity({
+            "brand": "McLaren", "model": "750S", "modification_project": "rotary swap",
+        }), history, now=now)
+    expired = content_policy.content_duplicate(
+        content_policy.content_identity({"brand": "McLaren", "model": "720S"}), history,
+        now=now + datetime.timedelta(days=30))
+
+    assert same_model["matched_by"] == "model"
+    assert same_project["matched_by"] == "modification_project"
+    assert expired is None
+
+
+def test_missing_verifiable_detail_blocks_publish_plan(tmp_path):
+    item = finalized_output(tmp_path)
+    item["recommendation"] = "这台跑车有多好玩？看完就知道了。"
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="verifiable_fact"):
+        xiaohongshu_publisher.build_plan(tmp_path, None, history)
+
+
+def test_missing_public_note_url_blocks_next_day_until_attached(tmp_path):
+    finalized_batch(tmp_path)
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    queue = publication_queue.PublicationQueue(history_path=history.path)
+    plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+    xiaohongshu_publisher.save_plan(tmp_path, plan)
+    receipt = xiaohongshu_publisher.record_result(tmp_path, history, queue=queue)
+    tomorrow = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+
+    assert receipt["note_url_pending"] is True
+    with pytest.raises(ValueError, match="attach-note"):
+        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue, now=tomorrow)
+
+    attached = xiaohongshu_publisher.attach_note(
+        tmp_path, history, plan["source_id"],
+        "https://www.xiaohongshu.com/explore/real-note", queue=queue)
+    next_plan = xiaohongshu_publisher.build_plan(
+        tmp_path, None, history, queue=queue, now=tomorrow)
+
+    assert attached["note_url_pending"] is False
+    assert history.check(source_id=plan["source_id"])["note_url"].endswith("real-note")
+    assert history.check(source_id=plan["source_id"])["note_url_pending"] is False
+    assert next_plan["source_id"] == "300"
+
+
+def test_note_metrics_due_checkpoints_and_conversion_rates(tmp_path):
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    publication = history.add(
+        "200", "BMW Z1", status="published", brand="BMW", model="Z1",
+        note_url="https://www.xiaohongshu.com/explore/note200")
+    store = note_metrics.NoteMetrics(tmp_path / "metrics.jsonl")
+    published_at = datetime.datetime.fromisoformat(publication["published_at"])
+
+    assert store.due(history, now=published_at + datetime.timedelta(hours=23))["due"] == []
+    due = store.due(history, now=published_at + datetime.timedelta(hours=24))
+    assert [item["checkpoint_hours"] for item in due["due"]] == [24]
+
+    with pytest.raises(ValueError, match="尚未到期"):
+        store.add(publication, 72, {
+            "views": 1000, "likes": 100, "favorites": 50,
+            "comments": 10, "shares": 5, "new_followers": 4,
+        }, now=published_at + datetime.timedelta(hours=24))
+
+    saved = store.add(publication, 24, {
+        "views": 1000, "likes": 100, "favorites": 50,
+        "comments": 10, "shares": 5, "new_followers": 4,
+    }, now=published_at + datetime.timedelta(hours=24))
+
+    assert saved["save_rate"] == 0.05
+    assert saved["save_rate_percent"] == 5.0
+    assert saved["follows_per_1000_views"] == 4.0
+    assert store.due(history, now=published_at + datetime.timedelta(hours=24))["due"] == []
+    assert [item["checkpoint_hours"] for item in store.due(
+        history, now=published_at + datetime.timedelta(hours=72))["due"]] == [72]

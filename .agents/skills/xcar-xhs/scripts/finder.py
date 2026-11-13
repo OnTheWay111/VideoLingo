@@ -494,10 +494,13 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "max_duration_seconds": args.max_duration,
         "minimum_selected": MIN_PUBLISH_SELECTION,
         "selection_target": target,
+        "daily_publish_limit": 1,
+        "model_cooldown_days": 30,
+        "brand_limit_per_batch": 1,
         "selection_complete": len(downloads) >= target if target else None,
         "download_thresholds": {
-            "min_likes": getattr(args, "min_likes", 1000),
-            "min_reposts": getattr(args, "min_reposts", 100),
+            "min_likes": getattr(args, "min_likes", 0),
+            "min_reposts": getattr(args, "min_reposts", 0),
         },
         "publish_history_file": history_path,
         "web_session": session_summary(args),
@@ -539,9 +542,10 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
              "- 生成时间：%s" % now,
              "- 排序：%s（%s）" % (args.sort, SORT_FIELDS[args.sort]),
              "- 视频时长：%s" % duration_rule,
-             "- 发布名单数量：至少 %d 条；%s" % (MIN_PUBLISH_SELECTION, selection_status),
-             "- 下载互动门槛：转发 ≥ %d 且点赞 ≥ %d；下载前跳过 %d 条" % (
-                 getattr(args, "min_reposts", 100), getattr(args, "min_likes", 1000),
+             "- 核验入选数量：至少 %d 条；每天只发布队列中最高分且不相似的一条；%s" % (
+                 MIN_PUBLISH_SELECTION, selection_status),
+             "- 互动过滤：转发 ≥ %d 且点赞 ≥ %d（默认均为 0，仅作弱参考）；下载前跳过 %d 条" % (
+                 getattr(args, "min_reposts", 0), getattr(args, "min_likes", 0),
                  len(engagement_skipped)),
              "- 发布历史：`%s`；下载前跳过 %d 条" % (history_path, len(publish_skipped)),
              "- 检索式：%d 组，候选视频推文 %d 条，非汽车剔除 %d 条，入选 %d 条，淘汰 %d 条" % (
@@ -655,10 +659,10 @@ def build_parser():
     ap.add_argument("--pages", type=int, default=1)
     ap.add_argument("--type", choices=("top", "latest", "media"), default="top")
     ap.add_argument("--since", default=None)
-    ap.add_argument("--min-likes", type=int, default=1000,
-                    help="点赞下载下限，默认 1000；0 表示不限制")
-    ap.add_argument("--min-reposts", type=int, default=100,
-                    help="转发下载下限，默认 100；本地过滤，0 表示不限制")
+    ap.add_argument("--min-likes", type=int, default=0,
+                    help="点赞下载下限，默认 0（点赞仅作弱参考）；显式大于 0 才过滤")
+    ap.add_argument("--min-reposts", type=int, default=0,
+                    help="转发下载下限，默认 0；本地过滤，显式大于 0 才过滤")
     ap.add_argument("--delay", type=float, default=1.5)
     ap.add_argument("--out", default="work/xfetch-run")
     ap.add_argument("--publish-history", default=str(default_history_path()),
@@ -767,7 +771,7 @@ def main():
         log("小红书禁选，下载前跳过 %s" % item["candidate"]["url"])
 
     print()
-    print("## 未发布且达到互动门槛的候选（按 %s 排序）" % SORT_LABELS[args.sort])
+    print("## 未发布候选（按 %s 弱参考排序，最终由核验评分决定）" % SORT_LABELS[args.sort])
     print_table(ranked, args.sort, args.candidates)
     print()
 
@@ -803,9 +807,9 @@ def main():
         print("淘汰目录: %s" % rejected_dir)
     print("报告: %s" % (out_dir / "REPORT.md"))
     if target and len(downloads) < target:
-        die("发布名单未达目标：当前 %d 条，目标 %d 条（硬性最少 %d 条）。"
+        die("核验入选名单未达目标：当前 %d 条，目标 %d 条（硬性最少 %d 条）。"
             "请增加 --pages、补充同义 --query 或扩大车型/场景检索后继续，"
-            "不得降低互动、选题、画面、时长或版权标准。" % (
+            "不得降低选题、画面、时长或版权标准。" % (
                 len(downloads), target, MIN_PUBLISH_SELECTION), code=3)
 
 

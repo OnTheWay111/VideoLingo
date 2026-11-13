@@ -6,7 +6,6 @@ import base64
 import datetime
 import json
 import os
-import random
 import shutil
 import signal
 import subprocess
@@ -17,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from publish_history import PublishedHistory, default_history_path
-from xiaohongshu_publisher import record_draft, record_result
+from xiaohongshu_publisher import record_draft, record_result, release_plan
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_DATA = "~/Library/Application Support/Google/Chrome"
@@ -60,10 +59,6 @@ def public_note_url(url):
         "https://www.xiaohongshu.com/discovery/item/",
     )
     return url if url.startswith(public_prefixes) else ""
-
-
-def random_delay_seconds():
-    return random.SystemRandom().randint(60, 600)
 
 
 def draft_success(text):
@@ -328,6 +323,15 @@ class ChromeSession:
         self.wait_for_upload("暂存离开" if action == "draft" else "发布")
         self.screenshot(Path(out_dir) / "browser" / ("%s_before.png" % plan["source_id"]))
 
+    def discover_public_note_url(self):
+        value = self.evaluate(
+            "JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map("
+            "element => element.href).filter(url => url.startsWith("
+            "'https://www.xiaohongshu.com/explore/') || url.startsWith("
+            "'https://www.xiaohongshu.com/discovery/item/')))")
+        urls = json.loads(value or "[]")
+        return next((url for url in urls if public_note_url(url)), "")
+
     def publish_plan(self, out_dir, plan):
         self.publish_clicked = False
         self.prepare_plan(out_dir, plan)
@@ -339,7 +343,8 @@ class ChromeSession:
             if publish_success(state.get("text", ""), state.get("url", "")):
                 after = Path(out_dir) / "browser" / ("%s_after.png" % plan["source_id"])
                 self.screenshot(after)
-                return {"status": "published", "note_url": public_note_url(state.get("url", "")),
+                note_url = public_note_url(state.get("url", "")) or self.discover_public_note_url()
+                return {"status": "published", "note_url": note_url,
                         "result_url": state.get("url", "")}
             time.sleep(2)
         after = Path(out_dir) / "browser" / ("%s_unconfirmed.png" % plan["source_id"])
@@ -367,43 +372,30 @@ class ChromeSession:
 
 def load_plans(out_dir, only=None):
     out_dir = Path(out_dir)
-    plans_dir = out_dir / "plans"
-    if only:
-        paths = [plans_dir / ("%s.json" % only)]
-    else:
-        manifest_path = out_dir / "manifest.json"
-        ordered_ids = []
-        if manifest_path.is_file():
-            manifest = json.loads(manifest_path.read_text())
-            ordered_ids = [str(item["candidate"]["id"]) for item in manifest.get("downloads", [])]
-        paths = [plans_dir / ("%s.json" % source_id) for source_id in ordered_ids]
-        included = {path.name for path in paths}
-        paths.extend(path for path in sorted(plans_dir.glob("*.json")) if path.name not in included)
-    if not paths or any(not path.is_file() for path in paths):
-        raise ValueError("找不到发布计划")
-    plans = []
-    for path in paths:
-        plan = json.loads(path.read_text())
-        action = plan.get("action")
-        if plan.get("status") != "ready" or action not in ("publish", "draft"):
-            raise ValueError("计划必须明确使用发布或草稿动作：%s" % path)
-        if not Path(plan["video_file"]).is_file():
-            raise ValueError("计划视频不存在：%s" % plan["video_file"])
-        plans.append(plan)
-    return plans
+    path = out_dir / "xiaohongshu_publish_plan.json"
+    if not path.is_file():
+        raise ValueError("找不到每日单发计划；请先运行 xiaohongshu_publisher.py plan")
+    plan = json.loads(path.read_text())
+    action = plan.get("action")
+    if plan.get("status") != "ready" or action not in ("publish", "draft"):
+        raise ValueError("计划必须明确使用发布或草稿动作：%s" % path)
+    if only and str(plan.get("source_id")) != str(only):
+        raise ValueError("--only 只能核对当前每日计划，不能绕过队列选择其他素材")
+    if not Path(plan["video_file"]).is_file():
+        raise ValueError("计划视频不存在：%s" % plan["video_file"])
+    return [plan]
 
 
 def run(out_dir, history, profile, headless, only=None, preflight=False, timeout=180,
-        sleep_fn=time.sleep, delay_fn=None):
+        sleep_fn=time.sleep):
     plans = load_plans(out_dir, only)
-    delay_fn = delay_fn or random_delay_seconds
     results = []
     with ChromeSession(profile, headless, timeout) as chrome:
         chrome.navigate_publish()
         print("Chrome 小红书登录态与上传页验证通过", flush=True)
         if preflight:
             return {"status": "ready", "published": 0, "results": []}
-        for index, plan in enumerate(plans):
+        for plan in plans:
             match = history.check(plan["source_id"], plan["title"])
             if match:
                 print("跳过已发布或待确认：%s" % plan["title"], flush=True)
@@ -430,10 +422,6 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                     break
                 print("操作成功：%s" % plan["title"], flush=True)
                 sleep_fn(3)
-                if action == "publish" and index < len(plans) - 1:
-                    delay = delay_fn()
-                    print("下一条发布前随机等待 %.1f 分钟" % (delay / 60), flush=True)
-                    sleep_fn(delay)
             except Exception as exc:
                 try:
                     debug_dir = Path(out_dir) / "browser"
@@ -454,6 +442,8 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                 else:
                     status = "error"
                     receipt = None
+                    if action == "publish":
+                        release_plan(out_dir, history)
                 results.append({"source_id": plan["source_id"], "title": plan["title"],
                                 "status": status, "receipt": receipt, "error": str(exc)})
                 print("%s：%s；停止后续操作" % (status, str(exc)), flush=True)

@@ -104,14 +104,17 @@ class PublishedHistory:
             raise ValueError("发布状态必须是 published、unconfirmed 或 failed")
         if not str(source_id or "").strip() and not normalize_title(title):
             raise ValueError("source_id 和 title 至少填写一项")
+        recorded_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         record = {
             "source_id": str(source_id or ""),
             "title": title or "",
             "source_url": source_url or "",
             "platform": platform,
             "status": status,
-            "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "recorded_at": recorded_at,
         }
+        if status == "published":
+            record["published_at"] = recorded_at
         record.update({key: value for key, value in extra.items() if value not in (None, "")})
         with locked_history(self.path, create=True) as handle:
             records = read_records(handle)
@@ -123,6 +126,25 @@ class PublishedHistory:
             handle.flush()
             os.fsync(handle.fileno())
         return record
+
+    def update_note_url(self, source_id, note_url):
+        if not str(note_url or "").strip():
+            raise ValueError("公开笔记地址不能为空")
+        with locked_history(self.path, create=True) as handle:
+            records = read_records(handle)
+            existing = match_record(records, source_id=source_id)
+            if not existing:
+                raise ValueError("找不到已发布或待确认记录：%s" % source_id)
+            record = {key: value for key, value in existing.items() if key != "matched_by"}
+            record["note_url"] = note_url.strip()
+            record["note_url_pending"] = False
+            record["note_url_recorded_at"] = datetime.datetime.now(
+                datetime.timezone.utc).isoformat(timespec="seconds")
+            handle.seek(0, os.SEEK_END)
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            return record
 
 
 def main(argv=None):
@@ -137,6 +159,12 @@ def main(argv=None):
             command.add_argument("--source-url", default="")
             command.add_argument("--status", choices=sorted(ACTIVE_STATUSES), default="published")
             command.add_argument("--note-url", default="")
+            command.add_argument("--brand", default="")
+            command.add_argument("--model", default="")
+            command.add_argument("--modification-project", default="")
+    note = commands.add_parser("attach-note", help="补登记真实公开笔记地址，不改变原发布时间")
+    note.add_argument("--source-id", required=True)
+    note.add_argument("--note-url", required=True)
     commands.add_parser("list")
     resolve = commands.add_parser("resolve", help="后台确认未发布后，将待确认记录更正为 failed")
     resolve.add_argument("--source-id", required=True)
@@ -160,7 +188,14 @@ def main(argv=None):
                                  "failed", resolution_reason=args.reason)
             print(json.dumps(record, ensure_ascii=False, indent=2))
             return 0
-        record = history.add(args.source_id, args.title, args.source_url, args.status, note_url=args.note_url)
+        if args.command == "attach-note":
+            record = history.update_note_url(args.source_id, args.note_url)
+            print(json.dumps(record, ensure_ascii=False, indent=2))
+            return 0
+        record = history.add(
+            args.source_id, args.title, args.source_url, args.status,
+            note_url=args.note_url, brand=args.brand, model=args.model,
+            modification_project=args.modification_project)
         print(json.dumps(record, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError) as exc:

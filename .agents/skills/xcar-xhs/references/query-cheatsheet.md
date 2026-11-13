@@ -37,7 +37,7 @@
 2. **场景词补充**：越野加 `offroad OR desert`，山路驾驶加 `"mountain road" OR "mountain pass" OR touge`，超跑加 `POV OR exhaust OR "car spotting"`，车评加 `review OR "test drive"`。
 3. **对照组**：固定补 2 组泛汽车检索（车聚/车展、车评/试驾），防止主题词太窄没结果。
 4. **中文兜底**：X 上中文车内容少，保留一组 `(汽车 OR 越野 OR 超跑)` 即可，其他用英文。
-5. **过滤条件**：默认 `filter:media` + `min_faves`（建议 200–1000）+ `since:`（近 1–3 个月），并加 `-crypto -nft -giveaway` 排除垃圾内容。
+5. **过滤条件**：默认 `filter:media` + `since:`（近 1–3 个月），并加 `-crypto -nft -giveaway` 排除垃圾内容。`min_faves` 只在用户显式要求互动门槛时添加；点赞仅作弱参考，不占评分，也不能替代前三秒、知识点和收藏价值的核验。
 
 ## 排序说明
 

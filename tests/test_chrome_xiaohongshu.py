@@ -69,12 +69,12 @@ def test_load_plans_accepts_publish_action_without_confirmation(tmp_path):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
     plan = {"status": "ready", "action": "publish", "video_file": str(video)}
-    (plans / "123.json").write_text(json.dumps(plan))
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps(plan))
 
     assert chrome.load_plans(tmp_path)[0]["video_file"] == str(video)
 
     plan["action"] = "preview"
-    (plans / "123.json").write_text(json.dumps(plan))
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps(plan))
     with pytest.raises(ValueError, match="发布或草稿动作"):
         chrome.load_plans(tmp_path)
 
@@ -139,7 +139,7 @@ def test_copy_profile_honors_source_profile(tmp_path):
     assert (target / "Default" / "Cookies").read_bytes() == b"profile-one"
 
 
-def test_load_plans_uses_manifest_download_order(tmp_path):
+def test_load_plans_reads_only_current_daily_selection(tmp_path):
     plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
@@ -149,11 +149,16 @@ def test_load_plans_uses_manifest_download_order(tmp_path):
             "status": "ready", "action": "publish", "video_file": str(video),
             "source_id": source_id,
         }))
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps({
+        "status": "ready", "action": "publish", "video_file": str(video), "source_id": "200",
+    }))
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [
         {"candidate": {"id": "100"}}, {"candidate": {"id": "200"}},
     ]}))
 
-    assert [plan["source_id"] for plan in chrome.load_plans(tmp_path)] == ["100", "200"]
+    assert [plan["source_id"] for plan in chrome.load_plans(tmp_path)] == ["200"]
+    with pytest.raises(ValueError, match="不能绕过队列"):
+        chrome.load_plans(tmp_path, only="100")
 
 
 def test_verify_content_rechecks_title_body_and_topics():
@@ -201,17 +206,12 @@ def test_enter_failure_cleans_temporary_profile(tmp_path):
     assert not Path(session.work).exists()
 
 
-def test_random_delay_is_between_one_and_ten_minutes():
-    for _ in range(100):
-        assert 60 <= chrome.random_delay_seconds() <= 600
-
-
 def test_load_plans_accepts_draft_action(tmp_path):
     plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
-    (plans / "123.json").write_text(json.dumps({
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps({
         "status": "ready", "action": "draft",
         "video_file": str(video), "source_id": "123", "title": "草稿标题",
     }))
@@ -219,7 +219,7 @@ def test_load_plans_accepts_draft_action(tmp_path):
     assert chrome.load_plans(tmp_path)[0]["action"] == "draft"
 
 
-def test_random_delay_only_occurs_between_successful_publications(tmp_path, monkeypatch):
+def test_run_executes_only_one_daily_plan_without_batch_delay(tmp_path, monkeypatch):
     plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
@@ -229,9 +229,10 @@ def test_random_delay_only_occurs_between_successful_publications(tmp_path, monk
             "status": "ready", "action": "publish",
             "video_file": str(video), "source_id": source_id, "title": source_id,
         }))
-    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [
-        {"candidate": {"id": "100"}}, {"candidate": {"id": "200"}},
-    ]}))
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps({
+        "status": "ready", "action": "publish",
+        "video_file": str(video), "source_id": "200", "title": "200",
+    }))
 
     class FakeChrome:
         def __enter__(self):
@@ -251,12 +252,12 @@ def test_random_delay_only_occurs_between_successful_publications(tmp_path, monk
     sleeps = []
     history = chrome.PublishedHistory(tmp_path / "history.jsonl")
 
-    summary = chrome.run(tmp_path, history, "Default", True,
-                         sleep_fn=sleeps.append, delay_fn=lambda: 321)
+    summary = chrome.run(tmp_path, history, "Default", True, sleep_fn=sleeps.append)
 
     assert summary["status"] == "complete"
-    assert summary["published"] == 2
-    assert sleeps == [3, 321, 3]
+    assert summary["published"] == 1
+    assert summary["results"][0]["source_id"] == "200"
+    assert sleeps == [3]
 
 
 def test_draft_success_requires_saved_state_or_nonzero_draft_count():
@@ -302,3 +303,13 @@ def test_wait_for_upload_blocks_while_progress_is_visible(monkeypatch):
 
     with pytest.raises(StopIteration):
         session.page_state()
+
+
+def test_discover_public_note_url_ignores_creator_result_links():
+    session = chrome.ChromeSession(headless=True)
+    session.evaluate = lambda expression: json.dumps([
+        "https://creator.xiaohongshu.com/publish/success",
+        "https://www.xiaohongshu.com/explore/real-note",
+    ])
+
+    assert session.discover_public_note_url() == "https://www.xiaohongshu.com/explore/real-note"

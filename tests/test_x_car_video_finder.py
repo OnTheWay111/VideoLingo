@@ -23,8 +23,8 @@ def test_finder_defaults_to_chrome_default_for_x_and_downloads():
     assert "默认 Default" in parser.format_help()
     assert args.web_session == "chrome"
     assert args.browser_profile == "Default"
-    assert args.min_likes == 1000
-    assert args.min_reposts == 100
+    assert args.min_likes == 0
+    assert args.min_reposts == 0
     assert finder.selection_target(args) == 3
     args.top = 1
     assert finder.selection_target(args) == 3
@@ -120,7 +120,7 @@ def test_download_report_includes_filename_and_absolute_directory(tmp_path):
     assert manifest["minimum_selected"] == 3
     assert manifest["selection_target"] == 3
     assert manifest["selection_complete"] is False
-    assert "发布名单数量：至少 3 条；未满足，必须继续搜索" in report
+    assert "核验入选数量：至少 3 条；每天只发布队列中最高分且不相似的一条；未满足，必须继续搜索" in report
     assert "| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |" in report
     assert "`clip.mp4`" in report
     assert "`%s`" % (tmp_path / "videos") in report
@@ -188,6 +188,28 @@ def publish_item(tmp_path, tweet_id, directory="videos", rejected=False):
         item["reason"] = "画面非汽车"
         item["frames"] = []
     return item
+
+
+def scored_publish(index, brand="Honda", model="S660", project=""):
+    fact = "%s %s 的 660cc 发动机位于座椅后方" % (brand, model)
+    return {
+        "title": "%s 的 660cc 在哪？" % model,
+        "body": fact + "，视频展示了对应结构。",
+        "brand": brand,
+        "model": model,
+        "modification_project": project,
+        "title_detail": "660cc",
+        "verifiable_fact": fact,
+        "fact_source": "https://example.com/facts/%s" % index,
+        "discussion_question": "你更想看哪种机械布局？",
+        "score_breakdown": {
+            "first_three_seconds": 22,
+            "knowledge_point": 22,
+            "save_value": 16,
+            "discussion_question": 10,
+            "recent_diversity": 10,
+        },
+    }
 
 
 def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
@@ -345,8 +367,9 @@ def test_finalize_accepts_three_selected_and_marks_selection_complete(tmp_path):
     }))
     publish_path = tmp_path / "publish.json"
     publish_path.write_text(json.dumps({
-        str(index): {"title": "车辆 %d" % index, "body": "正文"}
-        for index in range(1, 4)
+        "1": scored_publish(1, "Honda", "S660"),
+        "2": scored_publish(2, "BMW", "Z1"),
+        "3": scored_publish(3, "Toyota", "Sera"),
     }, ensure_ascii=False))
 
     finalizer.finalize(tmp_path, publish_path)
@@ -401,7 +424,15 @@ def test_auto_topic_plan_includes_mountain_driving_series():
 
     plan = topic_planner.build_topic_plan(records)
 
-    assert plan["strategy_version"] == 4
+    assert plan["strategy_version"] == 5
+    assert plan["score_rubric"] == {
+        "first_three_seconds": 25,
+        "knowledge_point": 25,
+        "save_value": 20,
+        "discussion_question": 15,
+        "recent_diversity": 15,
+    }
+    assert plan["source_engagement"] == "weak_reference_only"
     assert plan["pillar"] == "visual_experiment"
     assert plan["series_id"] == "mountain_driving"
     assert plan["series_label"] == "山路驾驶场景"
@@ -547,3 +578,24 @@ def test_engagement_download_thresholds_are_inclusive_and_independent():
     allowed, skipped = finder.partition_engagement_candidates([low_likes, low_reposts], 0, 0)
     assert len(allowed) == 2
     assert skipped == []
+
+
+def test_batch_deduplicates_brand_and_keeps_highest_scored_item():
+    items = []
+    for source_id, brand, model, score in (
+        ("1", "BMW", "Z1", 75),
+        ("2", "宝马", "M1", 90),
+        ("3", "Honda", "S660", 80),
+    ):
+        items.append({
+            "candidate": {"id": source_id}, "title": model, "brand": brand, "model": model,
+            "modification_project": "", "score": score,
+        })
+    manifest = {"minimum_selected": 3, "downloads": items, "rejected": [], "stats": {}}
+
+    finalizer.reject_duplicate_downloads(manifest, [], [])
+
+    assert [item["candidate"]["id"] for item in manifest["downloads"]] == ["2", "3"]
+    assert manifest["rejected"][0]["candidate"]["id"] == "1"
+    assert "同品牌每批最多一条" in manifest["rejected"][0]["reason"]
+    assert manifest["stats"]["content_duplicate_rejected"] == 1

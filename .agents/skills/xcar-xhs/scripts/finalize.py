@@ -7,6 +7,15 @@ import json
 import re
 from pathlib import Path
 
+from content_policy import (
+    content_duplicate,
+    content_identity,
+    normalize_brand,
+    validate_score,
+    validate_verifiable_content,
+)
+from publication_queue import PublicationQueue, WAITING_STATUSES
+from publish_history import ACTIVE_STATUSES, PublishedHistory
 from topic_policy import explainer_video_match
 
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
@@ -69,6 +78,13 @@ def load_publish(path):
             "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
             "ai_disclosure": str(item.get("ai_disclosure") or "").strip(),
+            "model": str(item.get("model") or "").strip(),
+            "modification_project": str(item.get("modification_project") or "").strip(),
+            "title_detail": str(item.get("title_detail") or "").strip(),
+            "verifiable_fact": str(item.get("verifiable_fact") or "").strip(),
+            "fact_source": str(item.get("fact_source") or "").strip(),
+            "discussion_question": str(item.get("discussion_question") or "").strip(),
+            "score_breakdown": item.get("score_breakdown"),
         }
     return result
 
@@ -165,6 +181,60 @@ def reject_explainer_downloads(manifest):
     )
 
 
+def apply_publish_content(items, publish):
+    for item in items:
+        content = publish[str(item["candidate"]["id"])]
+        item["title"] = content["title"]
+        item["recommendation"] = content["body"]
+        for key in (
+            "brand", "model", "modification_project", "file_topic", "title_detail",
+            "verifiable_fact", "fact_source", "discussion_question", "topics", "ai_disclosure",
+        ):
+            item[key] = content[key]
+        if content.get("score_breakdown") is not None:
+            item["score_breakdown"] = content["score_breakdown"]
+            item["score"] = sum(content["score_breakdown"].values())
+
+
+def reject_duplicate_downloads(manifest, history_records, queue_records):
+    downloads = sorted(
+        manifest.get("downloads", []),
+        key=lambda item: -float(item.get("score") or 0),
+    )
+    current_ids = {str(item["candidate"]["id"]) for item in downloads}
+    history_records = [record for record in history_records
+                       if str(record.get("source_id") or "") not in current_ids]
+    queue_records = [record for record in queue_records
+                     if str(record.get("source_id") or "") not in current_ids]
+    structured = manifest.get("minimum_selected") is not None
+    accepted, rejected = [], []
+    seen_brands = set()
+    for item in downloads:
+        identity = content_identity(item)
+        duplicate = content_duplicate(identity, accepted, days=None)
+        duplicate = duplicate or content_duplicate(
+            identity, history_records, days=30, statuses=ACTIVE_STATUSES)
+        duplicate = duplicate or content_duplicate(
+            identity, queue_records, days=None, statuses=WAITING_STATUSES)
+        brand = normalize_brand(item.get("brand"))
+        if duplicate:
+            item["reason"] = "车型级去重：%s（%s）" % (
+                duplicate["reason"], duplicate["title"] or duplicate["source_id"])
+        elif structured and brand and brand in seen_brands:
+            item["reason"] = "车型级去重：同品牌每批最多一条（%s）" % item.get("brand")
+        else:
+            accepted.append(item)
+            if brand:
+                seen_brands.add(brand)
+            continue
+        item.setdefault("verification", {})["status"] = "rejected"
+        item["verification"]["rejection_policy"] = "content_duplicate"
+        rejected.append(item)
+    manifest["downloads"] = accepted
+    manifest.setdefault("rejected", []).extend(rejected)
+    manifest.setdefault("stats", {})["content_duplicate_rejected"] = len(rejected)
+
+
 def finalize(out_dir, publish_file):
     out_dir = Path(out_dir).resolve()
     manifest_path = out_dir / "manifest.json"
@@ -177,13 +247,32 @@ def finalize(out_dir, publish_file):
     if missing or unknown:
         raise ValueError("发布内容与 manifest 不一致；缺少=%s，多余=%s" % (missing, unknown))
 
+    apply_publish_content(manifest.get("downloads", []) + manifest.get("rejected", []), publish)
     reject_explainer_downloads(manifest)
     minimum_selected = manifest.get("minimum_selected")
     if minimum_selected is not None:
         required_selected = max(minimum_selected, manifest.get("selection_target") or 0)
         if len(manifest.get("downloads", [])) < required_selected:
             raise ValueError(
-                "发布名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
+                "核验入选名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
+                % (required_selected, len(manifest.get("downloads", []))))
+        for item in manifest.get("downloads", []):
+            score, breakdown = validate_score(item)
+            validate_verifiable_content(item)
+            item["score"] = score
+            item["score_breakdown"] = breakdown
+            item.setdefault("verification", {})["score"] = score
+            item["verification"]["score_breakdown"] = breakdown
+    history_path = manifest.get("publish_history_file")
+    history_records = PublishedHistory(history_path).records() if history_path else []
+    queue = PublicationQueue(history_path=history_path) if history_path else PublicationQueue(
+        path=out_dir / "publish_queue.json")
+    reject_duplicate_downloads(manifest, history_records, queue.records())
+    if minimum_selected is not None:
+        required_selected = max(minimum_selected, manifest.get("selection_target") or 0)
+        if len(manifest.get("downloads", [])) < required_selected:
+            raise ValueError(
+                "核验入选名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
                 % (required_selected, len(manifest.get("downloads", []))))
         manifest["selection_complete"] = True
         manifest.setdefault("stats", {})["selection_complete"] = True
@@ -226,7 +315,7 @@ def finalize(out_dir, publish_file):
             (out_dir / ("videos" if group_name == "downloads" else "rejected")).mkdir(exist_ok=True)
     for source, target in operations:
         source.rename(target)
-    manifest["published_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    manifest["finalized_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     tables = render_publish_tables(manifest.get("downloads", []), manifest.get("rejected", []))
     update_report(out_dir / "REPORT.md", tables)

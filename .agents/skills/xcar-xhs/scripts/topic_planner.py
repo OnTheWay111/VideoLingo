@@ -5,10 +5,10 @@ import argparse
 import json
 from pathlib import Path
 
+from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 4
-SCORE_THRESHOLD = 70
+STRATEGY_VERSION = 5
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -16,14 +16,6 @@ PILLAR_SCHEDULE = (
     "rare_models", "mechanical_contrast", "rare_models", "rare_models", "mechanical_contrast",
     "rare_models", "visual_experiment", "rare_models", "mechanical_contrast", "rare_models",
 )
-SCORE_RUBRIC = {
-    "series_potential": 25,
-    "first_three_seconds": 20,
-    "domestic_rarity": 15,
-    "save_share_value": 15,
-    "discussion_potential": 15,
-    "source_engagement": 10,
-}
 NEGATIVE_FILTERS = (
     '-"car meet" -"car show" -"auto show" -"owner story" -"driving POV" '
     '-"road trip" -Goodwood -SEMA -crypto -nft -giveaway'
@@ -151,6 +143,11 @@ def build_topic_plan(records):
         "queries": queries,
         "score_threshold": SCORE_THRESHOLD,
         "score_rubric": SCORE_RUBRIC,
+        "source_engagement": "weak_reference_only",
+        "verified_selection_count": 3,
+        "daily_publish_limit": 1,
+        "model_cooldown_days": 30,
+        "brand_limit_per_batch": 1,
         "recent_titles": recent_titles,
         "recent_brands": recent_brands[:5],
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成小红书发布/草稿计划，并分别登记发布和草稿结果。"""
+"""把核验候选加入跨批次队列，每天只生成一条最高分发布计划。"""
 
 import argparse
 import datetime
@@ -7,16 +7,37 @@ import json
 import sys
 from pathlib import Path
 
-from publish_history import PublishedHistory, default_draft_history_path, default_history_path
+from content_policy import (
+    SCORE_THRESHOLD,
+    content_duplicate,
+    content_identity,
+    parse_datetime,
+    validate_score,
+    validate_verifiable_content,
+)
+from publish_history import (
+    ACTIVE_STATUSES,
+    PublishedHistory,
+    default_draft_history_path,
+    default_history_path,
+)
+from publication_queue import PublicationQueue
 from topic_policy import forbidden_topic_match
 
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video"
 ACTIONS = ("preview", "draft", "publish")
+PUBLIC_NOTE_PREFIXES = (
+    "https://www.xiaohongshu.com/explore/",
+    "https://www.xiaohongshu.com/discovery/item/",
+)
+
+
+def load_manifest(out_dir):
+    return json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
 
 
 def load_download(out_dir, tweet_id):
-    manifest_path = Path(out_dir) / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_manifest(out_dir)
     for item in manifest.get("downloads", []):
         candidate = item.get("candidate") or {}
         if str(candidate.get("id")) == str(tweet_id):
@@ -46,46 +67,130 @@ def validate_content(item):
         raise ValueError("topics 不能包含空话题")
     if not video.is_file() or video.stat().st_size <= 0:
         raise ValueError("视频文件不存在或为空：%s" % video)
-    return title, body, [topic.strip() for topic in topics], video.resolve()
+    score, breakdown = validate_score(item)
+    details = validate_verifiable_content(item)
+    item["score"] = score
+    item["score_breakdown"] = breakdown
+    item.setdefault("verification", {})["score"] = score
+    item["verification"]["score_breakdown"] = breakdown
+    item["verification"]["score_threshold"] = SCORE_THRESHOLD
+    return title, body, [topic.strip() for topic in topics], video.resolve(), details
 
 
-def build_plan(out_dir, tweet_id, history, action="publish"):
-    if action not in ACTIONS:
-        raise ValueError("action 必须是 preview、draft 或 publish")
-    item = load_download(out_dir, tweet_id)
-    manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
-    minimum_selected = manifest.get("minimum_selected")
-    required_selected = (max(minimum_selected, manifest.get("selection_target") or 0)
-                         if minimum_selected is not None else 0)
-    if action in ("publish", "draft") and len(manifest.get("downloads", [])) < required_selected:
-        raise ValueError(
-            "发布名单至少要有 %d 条，当前只有 %d 条；禁止生成发布计划，请继续搜索递补"
-            % (required_selected, len(manifest.get("downloads", []))))
-    topic_plan = manifest.get("topic_plan") or {}
-    candidate = item["candidate"]
-    title, body, topics, video = validate_content(item)
-    match = history.check(candidate.get("id"), title)
-    topic_details = {
-        "brand": item.get("brand") or "",
-        "file_topic": item.get("file_topic") or "",
+def latest_records(records):
+    latest = {}
+    for record in reversed(records):
+        source_id = str(record.get("source_id") or "")
+        if source_id not in latest:
+            latest[source_id] = record
+    return list(latest.values())
+
+
+def latest_published_record(history):
+    published = [record for record in latest_records(history.records())
+                 if record.get("status") == "published"]
+    if not published:
+        return None
+    return max(published, key=lambda record: str(record.get("published_at") or record.get("recorded_at") or ""))
+
+
+def ensure_daily_available(history, now=None):
+    now = now or datetime.datetime.now().astimezone()
+    records = latest_records(history.records())
+    unconfirmed = next((record for record in records if record.get("status") == "unconfirmed"), None)
+    if unconfirmed:
+        raise ValueError("仍有发布结果待确认：%s；请先核验后台，不能继续发布" % unconfirmed.get("title"))
+    latest = latest_published_record(history)
+    if not latest:
+        return None
+    published_at = parse_datetime(latest.get("published_at") or latest.get("recorded_at"))
+    if published_at and published_at.astimezone(now.tzinfo).date() == now.date():
+        raise ValueError("今天已经发布过一条：%s；其余素材继续排队" % latest.get("title"))
+    if not latest.get("note_url"):
+        raise ValueError("上一条已发布内容缺少真实公开笔记地址；请先运行 attach-note 补齐")
+    return latest
+
+
+def topic_metadata(item):
+    fields = (
+        "brand", "model", "modification_project", "file_topic", "topic_pillar",
+        "topic_series_id", "topic_series_episode", "topic_strategy_version", "ai_disclosure",
+        "title_detail", "verifiable_fact", "fact_source", "discussion_question",
+        "score", "score_breakdown",
+    )
+    return {key: item[key] for key in fields if key in item}
+
+
+def prepare_item(item, topic_plan):
+    values = {
         "topic_pillar": topic_plan.get("pillar") or "",
         "topic_series_id": topic_plan.get("series_id") or "",
         "topic_series_episode": topic_plan.get("series_episode") or "",
         "topic_strategy_version": topic_plan.get("strategy_version") or "",
     }
+    for key, value in values.items():
+        if value != "":
+            item[key] = value
+    return item
+
+
+def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=None):
+    if action not in ACTIONS:
+        raise ValueError("action 必须是 preview、draft 或 publish")
+    out_dir = Path(out_dir).resolve()
+    manifest = load_manifest(out_dir)
+    minimum_selected = manifest.get("minimum_selected")
+    required_selected = (max(minimum_selected, manifest.get("selection_target") or 0)
+                         if minimum_selected is not None else 0)
+    if action in ("publish", "draft") and len(manifest.get("downloads", [])) < required_selected:
+        raise ValueError(
+            "核验入选名单至少要有 %d 条，当前只有 %d 条；禁止生成发布计划，请继续搜索递补"
+            % (required_selected, len(manifest.get("downloads", []))))
+    topic_plan = manifest.get("topic_plan") or {}
+    queue = queue or PublicationQueue(history_path=history.path)
+
+    if action in ("preview", "draft"):
+        if not tweet_id:
+            raise ValueError("preview 或 draft 必须指定 --tweet-id")
+        item = prepare_item(load_download(out_dir, tweet_id), topic_plan)
+    else:
+        candidates = []
+        for original in manifest.get("downloads", []):
+            item = prepare_item(original, topic_plan)
+            validate_content(item)
+            candidate = item["candidate"]
+            if history.check(candidate.get("id"), item.get("title")):
+                continue
+            duplicate = content_duplicate(
+                content_identity(item), latest_records(history.records()), now=now, statuses=ACTIVE_STATUSES)
+            if duplicate:
+                raise ValueError("近期内容重复：%s（%s）" % (duplicate["reason"], duplicate["title"]))
+            candidates.append(item)
+        queue.enqueue(candidates, out_dir)
+        latest = ensure_daily_available(history, now)
+        entry = queue.select(latest)
+        if not entry:
+            raise ValueError("队列中没有适合今天发布的素材；相似内容继续保留，明天再选")
+        if tweet_id and str(tweet_id) != entry["source_id"]:
+            raise ValueError("每天只发布当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
+        item = entry["item"]
+
+    candidate = item["candidate"]
+    title, body, topics, video, details = validate_content(item)
+    match = history.check(candidate.get("id"), title)
     base = {
         "source_id": str(candidate.get("id")),
         "source_url": candidate.get("url") or "",
         "title": title,
         "history_file": str(history.path),
-        **{key: value for key, value in topic_details.items() if value != ""},
+        **topic_metadata(item),
     }
     if match:
         return {"status": "skipped", "reason": "already_published", "match": match, **base}
     disclosure = str(item.get("ai_disclosure") or "").strip()
     if action in ("publish", "draft") and not disclosure:
         raise ValueError("发布或保存草稿前必须填写 ai_disclosure")
-    sections = [body]
+    sections = [body, "讨论：%s" % details["discussion_question"]]
     if disclosure:
         sections.append(disclosure)
     sections.append(" ".join(topics))
@@ -129,29 +234,31 @@ def load_plan(out_dir):
     return plan
 
 
-def topic_metadata(plan):
-    fields = (
-        "brand", "file_topic", "topic_pillar", "topic_series_id",
-        "topic_series_episode", "topic_strategy_version", "ai_disclosure",
-    )
-    return {key: plan[key] for key in fields if key in plan}
+def valid_note_url(note_url):
+    return bool(note_url and note_url.startswith(PUBLIC_NOTE_PREFIXES))
 
 
-def record_result(out_dir, history, status="published", note_url="", result_url=""):
+def record_result(out_dir, history, status="published", note_url="", result_url="", queue=None):
     out_dir = Path(out_dir)
     plan = load_plan(out_dir)
     if plan.get("action") != "publish":
         raise ValueError("只有 publish 计划可以写入已发布历史")
+    if note_url and not valid_note_url(note_url):
+        raise ValueError("note_url 必须是真实公开笔记地址，不能保存发布结果页")
     record = history.add(
         plan["source_id"], plan["title"], plan.get("source_url", ""), status,
         note_url=note_url, result_url=result_url, video_file=plan.get("video_file", ""),
+        note_url_pending=status == "published" and not note_url,
         **topic_metadata(plan),
     )
+    queue = queue or PublicationQueue(history_path=history.path)
+    queue.complete(plan["source_id"], status, note_url)
     receipt = {
         "status": status,
         "source_id": plan["source_id"],
         "title": plan["title"],
         "note_url": note_url,
+        "note_url_pending": status == "published" and not note_url,
         "result_url": result_url,
         "history_file": str(history.path),
         "recorded_at": record["recorded_at"],
@@ -159,6 +266,30 @@ def record_result(out_dir, history, status="published", note_url="", result_url=
     receipt_path = out_dir / "xiaohongshu_publish_receipt.json"
     receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return receipt
+
+
+def attach_note(out_dir, history, source_id, note_url, queue=None):
+    if not valid_note_url(note_url):
+        raise ValueError("note_url 必须是真实公开笔记地址，不能保存发布结果页")
+    record = history.update_note_url(source_id, note_url)
+    queue = queue or PublicationQueue(history_path=history.path)
+    queue.attach_note(source_id, note_url)
+    receipt = {
+        "status": record["status"], "source_id": str(source_id), "title": record.get("title") or "",
+        "note_url": note_url, "note_url_pending": False,
+        "result_url": record.get("result_url") or "", "history_file": str(history.path),
+        "recorded_at": record["recorded_at"],
+    }
+    (Path(out_dir) / "xiaohongshu_publish_receipt.json").write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
+def release_plan(out_dir, history):
+    plan = load_plan(out_dir)
+    if plan.get("action") == "publish":
+        return PublicationQueue(history_path=history.path).release(plan["source_id"])
+    return None
 
 
 def record_draft(out_dir, status="draft_saved", result_url="", draft_history=None):
@@ -191,13 +322,16 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="finder/finalize 输出目录")
     parser.add_argument("--history-file", default=str(default_history_path()))
     commands = parser.add_subparsers(dest="command", required=True)
-    plan_parser = commands.add_parser("plan", help="生成发布计划，不直接操作网页；默认直接发布")
-    plan_parser.add_argument("--tweet-id", required=True)
+    plan_parser = commands.add_parser("plan", help="全部入选入队，每天只选择最高分且不相似的一条")
+    plan_parser.add_argument("--tweet-id", help="preview/draft 必填；publish 仅可校验当前自动选择结果")
     plan_parser.add_argument("--action", choices=ACTIONS, default="publish")
     record_parser = commands.add_parser("record", help="仅在网页发布成功或结果待确认后调用")
     record_parser.add_argument("--status", choices=("published", "unconfirmed"), default="published")
     record_parser.add_argument("--note-url", default="")
     record_parser.add_argument("--result-url", default="")
+    note_parser = commands.add_parser("attach-note", help="发布结果页不是公开地址时，补登记真实笔记 URL")
+    note_parser.add_argument("--source-id", required=True)
+    note_parser.add_argument("--note-url", required=True)
     draft_parser = commands.add_parser("record-draft", help="仅在草稿保存成功或结果待确认后调用")
     draft_parser.add_argument("--status", choices=("draft_saved", "unconfirmed_draft"), default="draft_saved")
     draft_parser.add_argument("--result-url", default="")
@@ -212,6 +346,8 @@ def main(argv=None):
             return 0
         if args.command == "record-draft":
             receipt = record_draft(out_dir, args.status, args.result_url)
+        elif args.command == "attach-note":
+            receipt = attach_note(out_dir, history, args.source_id, args.note_url)
         else:
             receipt = record_result(out_dir, history, args.status, args.note_url, args.result_url)
         print(json.dumps(receipt, ensure_ascii=False, indent=2))
