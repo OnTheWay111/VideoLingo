@@ -255,7 +255,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert selected["brand"] == "Bugatti"
     assert selected["file_topic"] == "奇怪汽车：飞行/翻滚"
     assert selected["topics"] == ["#改装车", "#Goodwood2026"]
-    assert selected["ai_disclosure"] == "选题、素材初筛及文字由 AI 辅助整理。"
+    assert selected["ai_disclosure"] == ""
     assert saved["downloads"][0]["video"]["file"] == str(selected_path)
     report = (tmp_path / "REPORT.md").read_text()
     assert "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |" in report

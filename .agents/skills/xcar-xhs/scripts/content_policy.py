@@ -35,10 +35,17 @@ def normalized(value):
 
 
 MATERIAL_SOURCE_RE = re.compile(r"素材(?:来自|来源)[^；。\n]*[；;]?")
+PRESET_AI_DISCLOSURE_RE = re.compile(r"(?:[；;]\s*)?选题、素材初筛及文字由\s*AI\s*辅助整理[。；;]?")
 
 
 def strip_material_source_disclosure(value):
     return MATERIAL_SOURCE_RE.sub("", str(value or "")).strip()
+
+
+def strip_preset_ai_disclosure(value):
+    text = PRESET_AI_DISCLOSURE_RE.sub("", str(value or ""))
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip("；; \t\r\n")
 
 
 def validate_no_material_source_copy(value):

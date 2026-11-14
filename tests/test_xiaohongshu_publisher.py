@@ -62,7 +62,6 @@ def finalized_output(tmp_path, tweet_id="123", title="S660 的 660cc 在哪？")
             "recent_diversity": 10,
         },
         "topics": ["#罕见车型", "#汽车文化"],
-        "ai_disclosure": "选题、素材初筛及文字由 AI 辅助整理。",
     }
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     return item
@@ -134,6 +133,8 @@ def test_default_plan_publishes_without_additional_confirmation(tmp_path):
     assert plan["browser_actions"][-1] == "publish"
     assert "confirm_publish" not in plan
     assert "rights_confirmed" not in plan
+    assert plan["ai_disclosure"] == ""
+    assert "AI 辅助整理" not in plan["full_text"]
     assert plan["publish_url"] == (
         "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video")
     assert Path(plan["video_file"]).is_file()
@@ -310,7 +311,7 @@ def test_auto_topic_metadata_is_saved_to_publish_history(tmp_path):
     assert saved["topic_strategy_version"] == 2
 
 
-def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
+def test_draft_plan_omits_preset_disclosure_and_uses_separate_history(tmp_path):
     finalized_output(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, action="draft")
@@ -318,7 +319,7 @@ def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
     drafts = publish_history.PublishedHistory(tmp_path / "drafts.jsonl")
 
     assert plan["action"] == "draft"
-    assert "AI 辅助整理" in plan["full_text"]
+    assert "AI 辅助整理" not in plan["full_text"]
     receipt = xiaohongshu_publisher.record_draft(tmp_path, draft_history=drafts)
 
     assert receipt["status"] == "draft_saved"
@@ -327,22 +328,25 @@ def test_draft_plan_includes_disclosure_and_uses_separate_history(tmp_path):
 
 
 @pytest.mark.parametrize("action", ["publish", "draft"])
-def test_publish_and_draft_require_disclosure(tmp_path, action):
+def test_publish_and_draft_do_not_require_disclosure(tmp_path, action):
     item = finalized_output(tmp_path)
-    item["ai_disclosure"] = ""
+    item.pop("ai_disclosure", None)
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
 
-    with pytest.raises(ValueError, match="ai_disclosure"):
-        xiaohongshu_publisher.build_plan(tmp_path, "123", history, action=action)
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history, action=action)
+
+    assert plan["status"] == "ready"
+    assert plan["ai_disclosure"] == ""
+    assert "AI 辅助整理" not in plan["full_text"]
 
 
 @pytest.mark.parametrize("disclosure, expected", [
-    ("素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。", "选题、素材初筛及文字由 AI 辅助整理。"),
-    ("概念车画面；素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。",
-     "概念车画面；选题、素材初筛及文字由 AI 辅助整理。"),
+    ("素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。", ""),
+    ("概念车画面；素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。", "概念车画面"),
+    ("AI 生成画面；选题、素材初筛及文字由 AI 辅助整理。", "AI 生成画面"),
 ])
-def test_publish_plan_removes_material_source_and_keeps_required_disclosure(
+def test_publish_plan_removes_material_source_and_preset_ai_disclosure(
         tmp_path, disclosure, expected):
     item = finalized_output(tmp_path)
     item["ai_disclosure"] = disclosure
@@ -353,9 +357,9 @@ def test_publish_plan_removes_material_source_and_keeps_required_disclosure(
 
     assert plan["ai_disclosure"] == expected
     assert "素材来自" not in plan["full_text"]
-    assert "AI 辅助整理" in plan["full_text"]
-    if disclosure.startswith("概念车"):
-        assert "概念车画面" in plan["full_text"]
+    assert "AI 辅助整理" not in plan["full_text"]
+    if expected:
+        assert expected in plan["full_text"]
 
 
 def test_publish_plan_rejects_material_source_in_body(tmp_path):

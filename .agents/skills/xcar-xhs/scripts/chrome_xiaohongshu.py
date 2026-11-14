@@ -15,6 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from content_policy import strip_preset_ai_disclosure
 from publish_history import PublishedHistory, default_history_path
 from xiaohongshu_publisher import (
     record_draft,
@@ -387,6 +388,10 @@ def load_plans(out_dir, only=None):
     if only and str(plan.get("source_id")) != str(only):
         raise ValueError("--only 只能核对当前计划，不能绕过队列选择其他素材")
     validate_no_material_source_copy(plan.get("full_text"))
+    if "full_text" in plan:
+        plan["full_text"] = strip_preset_ai_disclosure(plan["full_text"])
+    if "ai_disclosure" in plan:
+        plan["ai_disclosure"] = strip_preset_ai_disclosure(plan["ai_disclosure"])
     if not Path(plan["video_file"]).is_file():
         raise ValueError("计划视频不存在：%s" % plan["video_file"])
     return [plan]

@@ -91,6 +91,21 @@ def test_load_plans_rejects_material_source_copy(tmp_path):
         chrome.load_plans(tmp_path)
 
 
+def test_load_plans_removes_preset_ai_disclosure_from_legacy_plan(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    (tmp_path / "xiaohongshu_publish_plan.json").write_text(json.dumps({
+        "status": "ready", "action": "publish", "video_file": str(video),
+        "ai_disclosure": "概念车画面；选题、素材初筛及文字由 AI 辅助整理。",
+        "full_text": "正文\n\n讨论：问题？\n\n概念车画面；选题、素材初筛及文字由 AI 辅助整理。\n\n#汽车 #概念车",
+    }))
+
+    plan = chrome.load_plans(tmp_path)[0]
+
+    assert plan["ai_disclosure"] == "概念车画面"
+    assert plan["full_text"] == "正文\n\n讨论：问题？\n\n概念车画面\n\n#汽车 #概念车"
+
+
 def test_click_publish_tracks_actual_click_for_unconfirmed_recovery():
     session = chrome.ChromeSession(headless=True)
     session.publish_backend_node = lambda button_name="发布": 42

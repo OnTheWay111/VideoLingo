@@ -12,6 +12,7 @@ from content_policy import (
     content_duplicate,
     content_identity,
     strip_material_source_disclosure,
+    strip_preset_ai_disclosure,
     validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
@@ -52,7 +53,8 @@ def validate_content(item):
     forbidden = forbidden_topic_match(item)
     if forbidden:
         raise ValueError("小红书禁选主题，禁止生成发布计划：%s" % forbidden)
-    item["ai_disclosure"] = strip_material_source_disclosure(item.get("ai_disclosure"))
+    item["ai_disclosure"] = strip_preset_ai_disclosure(
+        strip_material_source_disclosure(item.get("ai_disclosure")))
     title = (item.get("title") or "").strip()
     body = (item.get("recommendation") or "").strip()
     validate_no_material_source_copy(body)
@@ -185,8 +187,6 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
     if match:
         return {"status": "skipped", "reason": "already_published", "match": match, **base}
     disclosure = str(item.get("ai_disclosure") or "").strip()
-    if action in ("publish", "draft") and not disclosure:
-        raise ValueError("发布或保存草稿前必须填写 ai_disclosure")
     sections = [body, "讨论：%s" % details["discussion_question"]]
     if disclosure:
         sections.append(disclosure)

@@ -12,6 +12,7 @@ from content_policy import (
     content_identity,
     normalize_brand,
     strip_material_source_disclosure,
+    strip_preset_ai_disclosure,
     validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
@@ -80,7 +81,8 @@ def load_publish(path):
             "brand": brand,
             "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
-            "ai_disclosure": strip_material_source_disclosure(item.get("ai_disclosure")),
+            "ai_disclosure": strip_preset_ai_disclosure(
+                strip_material_source_disclosure(item.get("ai_disclosure"))),
             "model": str(item.get("model") or "").strip(),
             "modification_project": str(item.get("modification_project") or "").strip(),
             "title_detail": str(item.get("title_detail") or "").strip(),
