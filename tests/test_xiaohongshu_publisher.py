@@ -337,6 +337,37 @@ def test_publish_and_draft_require_disclosure(tmp_path, action):
         xiaohongshu_publisher.build_plan(tmp_path, "123", history, action=action)
 
 
+@pytest.mark.parametrize("disclosure, expected", [
+    ("素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。", "选题、素材初筛及文字由 AI 辅助整理。"),
+    ("概念车画面；素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。",
+     "概念车画面；选题、素材初筛及文字由 AI 辅助整理。"),
+])
+def test_publish_plan_removes_material_source_and_keeps_required_disclosure(
+        tmp_path, disclosure, expected):
+    item = finalized_output(tmp_path)
+    item["ai_disclosure"] = disclosure
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+
+    assert plan["ai_disclosure"] == expected
+    assert "素材来自" not in plan["full_text"]
+    assert "AI 辅助整理" in plan["full_text"]
+    if disclosure.startswith("概念车"):
+        assert "概念车画面" in plan["full_text"]
+
+
+def test_publish_plan_rejects_material_source_in_body(tmp_path):
+    item = finalized_output(tmp_path)
+    item["recommendation"] = "素材来自品牌官方 X 账号；" + item["recommendation"]
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    with pytest.raises(ValueError, match="素材来源说明"):
+        xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+
+
 def test_publisher_blocks_visual_talking_head_with_neutral_text(tmp_path):
     item = finalized_output(tmp_path)
     item["recommendation"] = "Suzuki Cappuccino 展示车头与改装部件。"

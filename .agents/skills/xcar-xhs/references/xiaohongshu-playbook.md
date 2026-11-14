@@ -120,7 +120,7 @@ python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
 
 输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/<原帖ID>.json`。Chrome 只读取当前发布计划，不扫描目录里的其他计划。标题超长、事实未写入正文、来源缺失、评分不完整、话题数量不符或视频缺失都会直接阻断。
 
-只有用户明确要求时才使用 `--action preview` 或 `--action draft`，此时必须传 `--tweet-id`。正式发布默认 `action=publish`，不需要二次确认；AI 披露仍不可省略。
+只有用户明确要求时才使用 `--action preview` 或 `--action draft`，此时必须传 `--tweet-id`。正式发布默认 `action=publish`，不需要二次确认；AI 披露仍不可省略。`ai_disclosure` 不得包含“素材来自……”或“素材来源……”等素材来源文案；来源句会从披露字段中删除，正文或已有计划含来源文案时禁止发布。
 
 ## 六、Chrome Default 自动执行
 

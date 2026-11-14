@@ -16,7 +16,12 @@ import urllib.request
 from pathlib import Path
 
 from publish_history import PublishedHistory, default_history_path
-from xiaohongshu_publisher import record_draft, record_result, release_plan
+from xiaohongshu_publisher import (
+    record_draft,
+    record_result,
+    release_plan,
+    validate_no_material_source_copy,
+)
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_DATA = "~/Library/Application Support/Google/Chrome"
@@ -381,6 +386,7 @@ def load_plans(out_dir, only=None):
         raise ValueError("计划必须明确使用发布或草稿动作：%s" % path)
     if only and str(plan.get("source_id")) != str(only):
         raise ValueError("--only 只能核对当前计划，不能绕过队列选择其他素材")
+    validate_no_material_source_copy(plan.get("full_text"))
     if not Path(plan["video_file"]).is_file():
         raise ValueError("计划视频不存在：%s" % plan["video_file"])
     return [plan]

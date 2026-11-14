@@ -11,6 +11,8 @@ from content_policy import (
     SCORE_THRESHOLD,
     content_duplicate,
     content_identity,
+    strip_material_source_disclosure,
+    validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
 )
@@ -50,8 +52,10 @@ def validate_content(item):
     forbidden = forbidden_topic_match(item)
     if forbidden:
         raise ValueError("小红书禁选主题，禁止生成发布计划：%s" % forbidden)
+    item["ai_disclosure"] = strip_material_source_disclosure(item.get("ai_disclosure"))
     title = (item.get("title") or "").strip()
     body = (item.get("recommendation") or "").strip()
+    validate_no_material_source_copy(body)
     topics = item.get("topics") or []
     video = Path((item.get("video") or {}).get("file") or "")
     if not 1 <= len(title) <= 20:
@@ -187,6 +191,8 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
     if disclosure:
         sections.append(disclosure)
     sections.append(" ".join(topics))
+    full_text = "\n\n".join(sections)
+    validate_no_material_source_copy(full_text)
     browser_actions = ["upload_video", "fill_title", "fill_body", "add_topics", "verify_upload"]
     if action in ("publish", "draft"):
         browser_actions.append("publish" if action == "publish" else "save_draft")
@@ -200,7 +206,7 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
         "body": body,
         "topics": topics,
         "ai_disclosure": disclosure,
-        "full_text": "\n\n".join(sections),
+        "full_text": full_text,
         "browser_actions": browser_actions,
         **base,
     }

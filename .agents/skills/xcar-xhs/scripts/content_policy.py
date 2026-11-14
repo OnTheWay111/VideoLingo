@@ -34,6 +34,18 @@ def normalized(value):
     return re.sub(r"[\s_\-–—/\\.,，。:：()（）\[\]{}]+", "", str(value or "")).casefold()
 
 
+MATERIAL_SOURCE_RE = re.compile(r"素材(?:来自|来源)[^；。\n]*[；;]?")
+
+
+def strip_material_source_disclosure(value):
+    return MATERIAL_SOURCE_RE.sub("", str(value or "")).strip()
+
+
+def validate_no_material_source_copy(value):
+    if MATERIAL_SOURCE_RE.search(str(value or "")):
+        raise ValueError("小红书文案不得包含素材来源说明")
+
+
 def normalize_brand(value):
     key = normalized(value)
     return BRAND_ALIASES.get(key, key)

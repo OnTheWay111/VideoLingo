@@ -11,6 +11,8 @@ from content_policy import (
     content_duplicate,
     content_identity,
     normalize_brand,
+    strip_material_source_disclosure,
+    validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
 )
@@ -69,6 +71,7 @@ def load_publish(path):
         file_topic = str(item.get("file_topic") or title).strip()
         if not title or not body:
             raise ValueError("推文 %s 缺少 title 或 body" % tweet_id)
+        validate_no_material_source_copy(body)
         if not brand or not file_topic:
             raise ValueError("推文 %s 的 brand 或 file_topic 不能为空" % tweet_id)
         result[str(tweet_id)] = {
@@ -77,7 +80,7 @@ def load_publish(path):
             "brand": brand,
             "file_topic": file_topic,
             "topics": load_topics(item, tweet_id),
-            "ai_disclosure": str(item.get("ai_disclosure") or "").strip(),
+            "ai_disclosure": strip_material_source_disclosure(item.get("ai_disclosure")),
             "model": str(item.get("model") or "").strip(),
             "modification_project": str(item.get("modification_project") or "").strip(),
             "title_detail": str(item.get("title_detail") or "").strip(),

@@ -229,6 +229,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
             "brand": "Bugatti",
             "file_topic": "奇怪汽车：飞行/翻滚",
             "topics": ["改装车", "#Goodwood 2026"],
+            "ai_disclosure": "素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。",
         },
         "2": {
             "title": "淘汰视频标题",
@@ -254,6 +255,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert selected["brand"] == "Bugatti"
     assert selected["file_topic"] == "奇怪汽车：飞行/翻滚"
     assert selected["topics"] == ["#改装车", "#Goodwood2026"]
+    assert selected["ai_disclosure"] == "选题、素材初筛及文字由 AI 辅助整理。"
     assert saved["downloads"][0]["video"]["file"] == str(selected_path)
     report = (tmp_path / "REPORT.md").read_text()
     assert "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |" in report
