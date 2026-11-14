@@ -169,7 +169,7 @@ def test_preview_plan_cannot_be_recorded_as_published(tmp_path):
     assert not stale_plan.exists()
 
 
-def test_successful_record_blocks_future_plan(tmp_path):
+def test_successful_record_saves_public_note_and_result_url(tmp_path):
     finalized_output(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
@@ -182,8 +182,6 @@ def test_successful_record_blocks_future_plan(tmp_path):
     assert receipt["status"] == "published"
     assert receipt["result_url"].endswith("/publish/success")
     assert history.check(source_id="123")["note_url"].endswith("note1")
-    with pytest.raises(ValueError, match="今天已经发布过一条"):
-        xiaohongshu_publisher.build_plan(tmp_path, None, history)
 
 
 def test_publish_plan_blocks_new_manifest_with_fewer_than_three_selected(tmp_path):
@@ -387,7 +385,7 @@ def finalized_batch(tmp_path):
     return items
 
 
-def test_three_verified_items_enqueue_but_only_highest_scores_publish_each_day(tmp_path):
+def test_three_verified_items_can_generate_another_plan_on_the_same_day(tmp_path):
     finalized_batch(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     queue = publication_queue.PublicationQueue(history_path=history.path)
@@ -403,17 +401,13 @@ def test_three_verified_items_enqueue_but_only_highest_scores_publish_each_day(t
     xiaohongshu_publisher.record_result(
         tmp_path, history, note_url="https://www.xiaohongshu.com/explore/note200", queue=queue)
 
-    with pytest.raises(ValueError, match="今天已经发布过一条"):
-        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+    next_plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
 
-    tomorrow = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
-    next_plan = xiaohongshu_publisher.build_plan(
-        tmp_path, None, history, queue=queue, now=tomorrow)
     assert next_plan["source_id"] == "300"
     assert next_plan["score"] == 85
 
 
-def test_daily_selection_defers_same_brand_as_previous_note(tmp_path):
+def test_selection_defers_same_brand_as_previous_note(tmp_path):
     finalized_batch(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     queue = publication_queue.PublicationQueue(history_path=history.path)
@@ -462,24 +456,22 @@ def test_missing_verifiable_detail_blocks_publish_plan(tmp_path):
         xiaohongshu_publisher.build_plan(tmp_path, None, history)
 
 
-def test_missing_public_note_url_blocks_next_day_until_attached(tmp_path):
+def test_missing_public_note_url_blocks_next_plan_until_attached(tmp_path):
     finalized_batch(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     queue = publication_queue.PublicationQueue(history_path=history.path)
     plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
     xiaohongshu_publisher.save_plan(tmp_path, plan)
     receipt = xiaohongshu_publisher.record_result(tmp_path, history, queue=queue)
-    tomorrow = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
 
     assert receipt["note_url_pending"] is True
     with pytest.raises(ValueError, match="attach-note"):
-        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue, now=tomorrow)
+        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
 
     attached = xiaohongshu_publisher.attach_note(
         tmp_path, history, plan["source_id"],
         "https://www.xiaohongshu.com/explore/real-note", queue=queue)
-    next_plan = xiaohongshu_publisher.build_plan(
-        tmp_path, None, history, queue=queue, now=tomorrow)
+    next_plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
 
     assert attached["note_url_pending"] is False
     assert history.check(source_id=plan["source_id"])["note_url"].endswith("real-note")

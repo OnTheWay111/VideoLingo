@@ -374,13 +374,13 @@ def load_plans(out_dir, only=None):
     out_dir = Path(out_dir)
     path = out_dir / "xiaohongshu_publish_plan.json"
     if not path.is_file():
-        raise ValueError("找不到每日单发计划；请先运行 xiaohongshu_publisher.py plan")
+        raise ValueError("找不到发布计划；请先运行 xiaohongshu_publisher.py plan")
     plan = json.loads(path.read_text())
     action = plan.get("action")
     if plan.get("status") != "ready" or action not in ("publish", "draft"):
         raise ValueError("计划必须明确使用发布或草稿动作：%s" % path)
     if only and str(plan.get("source_id")) != str(only):
-        raise ValueError("--only 只能核对当前每日计划，不能绕过队列选择其他素材")
+        raise ValueError("--only 只能核对当前计划，不能绕过队列选择其他素材")
     if not Path(plan["video_file"]).is_file():
         raise ValueError("计划视频不存在：%s" % plan["video_file"])
     return [plan]

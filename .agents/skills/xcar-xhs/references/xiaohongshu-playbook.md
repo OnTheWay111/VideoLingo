@@ -1,4 +1,4 @@
-# 小红书汽车账号选题、每日单发与效果手册
+# 小红书汽车账号选题、逐条发布与效果手册
 
 ## 一、选题策略：以关注转化为目标
 
@@ -20,19 +20,19 @@
 | 25% | 改装与机械反差 | 发动机移植、宽体、排气、马力机、定制工艺 | 20–60 秒 |
 | 15% | 视觉实验选题 | 极小汽车、奇特结构、罕见原型车、山路驾驶 | 15–45 秒 |
 
-无需人工输入主题时运行 `finder.py --auto-topic`。计划器按固定 20 条顺序轮动，同一栏目内每 5 期切换一个系列。计划器只负责栏目、系列、期数和检索式，不自动放行素材；发布队列仍会避免连续两天出现同系列内容。
+无需人工输入主题时运行 `finder.py --auto-topic`。计划器按固定 20 条顺序轮动，同一栏目内每 5 期切换一个系列。计划器只负责栏目、系列、期数和检索式，不自动放行素材；发布队列仍会避免相邻笔记出现同系列内容。
 
-## 二、三条核验与一条发布解耦
+## 二、三条核验与逐条发布解耦
 
 每次正式任务必须至少有 **3 条完整通过评分、时长、画面、版权和去重核验的素材**。不足时继续翻页、补充同义检索式、扩大同栏目搜索并递补，不能降低标准凑数。
 
-3 条是候选池数量，不是当日发布数量：
+3 条是候选池数量，不是每日发布数量上限：
 
 - `finalize.py` 按总分降序整理本批入选。
-- `xiaohongshu_publisher.py plan` 把本批全部入选加入 `state/publish_queue.json`，只生成当天一条计划。
-- 当天最高分候选若与上一条同品牌、同改装项目或同系列，则保留在队列，改选下一条不相似内容。
-- 同一天再次运行不得发布第二条。次日重新运行计划命令，旧队列与新批次一起参与评分选择。
-- 不再按 manifest 批量连续发布，也不使用两条之间 1–10 分钟的随机等待。
+- `xiaohongshu_publisher.py plan` 把本批全部入选加入 `state/publish_queue.json`，生成下一条发布计划。
+- 当前最高分候选若与上一条同品牌、同改装项目或同系列，则保留在队列，改选下一条不相似内容。
+- 当前发布登记完成并补齐公开笔记地址后，可再次运行计划命令，旧队列与新批次一起参与评分选择，不设每日一条限制。
+- 每次只执行当前计划，不扫描 `plans/` 批量发布，也不使用两条之间 1–10 分钟的随机等待。
 - 上传或填写失败且尚未点击发布时，候选释放回队列；点击后结果不明记为 `unconfirmed`，必须先核验后台。
 
 固定队列文件：
@@ -71,7 +71,7 @@ X 点赞、评论、转发和播放只作弱参考，不占分，不能作为主
 2. 同品牌、同改装项目 30 天内不重复，即使原帖 ID、车型年款或标题不同也能识别。例如“迈凯伦转子”和“McLaren rotary swap”属于重复项目。
 3. 同品牌每批最多一条，保留该品牌评分最高者，其余淘汰并继续递补到 3 条。
 4. 队列中的同车型或同品牌同项目也不重复，避免不同原帖换皮后排队再发。
-5. 每日选择额外避开与上一条同品牌、同项目或同系列的内容。
+5. 每次选择额外避开与上一条同品牌、同项目或同系列的内容。
 
 finder 在下载前按原帖 ID 过滤；`finalize.py` 在定稿前执行结构化去重；入队时再次检查，发布器最终复核。
 
@@ -111,14 +111,14 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
   --out work/xfetch-run --publish-file work/xfetch-run/publish.json
 ```
 
-全部入选入队并生成当天唯一计划：
+全部入选入队并生成下一条发布计划：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
   --out work/xfetch-run plan
 ```
 
-输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/<原帖ID>.json`。Chrome 只读取当前每日计划，不扫描目录里的其他计划。标题超长、事实未写入正文、来源缺失、评分不完整、话题数量不符或视频缺失都会直接阻断。
+输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/<原帖ID>.json`。Chrome 只读取当前发布计划，不扫描目录里的其他计划。标题超长、事实未写入正文、来源缺失、评分不完整、话题数量不符或视频缺失都会直接阻断。
 
 只有用户明确要求时才使用 `--action preview` 或 `--action draft`，此时必须传 `--tweet-id`。正式发布默认 `action=publish`，不需要二次确认；AI 披露仍不可省略。
 
@@ -134,11 +134,11 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --timeout 90
 ```
 
-脚本只复制 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，通过 CDP 操作独立 Chrome，不修改原浏览器配置或标签页，不输出 Cookie 值。去掉 `--headless` 可显示隔离浏览器；`--only` 只能核对当前每日计划，不能绕过队列选其他素材。
+脚本只复制 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，通过 CDP 操作独立 Chrome，不修改原浏览器配置或标签页，不输出 Cookie 值。去掉 `--headless` 可显示隔离浏览器；`--only` 只能核对当前发布计划，不能绕过队列选其他素材。
 
 执行流程：直接打开视频发布页，上传并等待转码完成，填入标题正文和话题，复读核验，等待发布按钮启用后发送真实鼠标事件。只有页面出现明确成功状态才登记 `published`。任何待确认或错误都停止操作，不能并发点击。
 
-`result_url` 是发布结果页，`note_url` 只能是 `/explore/` 或 `/discovery/item/` 的真实公开笔记地址。成功页没有公开地址时，脚本会尝试读取页面内的公开笔记链接；仍拿不到则保存 `note_url_pending=true`，下一天发布前必须补齐。
+`result_url` 是发布结果页，`note_url` 只能是 `/explore/` 或 `/discovery/item/` 的真实公开笔记地址。成功页没有公开地址时，脚本会尝试读取页面内的公开笔记链接；仍拿不到则保存 `note_url_pending=true`，后续发布前必须补齐。
 
 实测问题与异常处理见 [Chrome 发布故障手册](xiaohongshu-chrome-troubleshooting.md)。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把核验候选加入跨批次队列，每天只生成一条最高分发布计划。"""
+"""把核验候选加入跨批次队列，逐条生成最高分发布计划。"""
 
 import argparse
 import datetime
@@ -11,7 +11,6 @@ from content_policy import (
     SCORE_THRESHOLD,
     content_duplicate,
     content_identity,
-    parse_datetime,
     validate_score,
     validate_verifiable_content,
 )
@@ -94,19 +93,13 @@ def latest_published_record(history):
     return max(published, key=lambda record: str(record.get("published_at") or record.get("recorded_at") or ""))
 
 
-def ensure_daily_available(history, now=None):
-    now = now or datetime.datetime.now().astimezone()
+def ensure_publish_available(history):
     records = latest_records(history.records())
     unconfirmed = next((record for record in records if record.get("status") == "unconfirmed"), None)
     if unconfirmed:
         raise ValueError("仍有发布结果待确认：%s；请先核验后台，不能继续发布" % unconfirmed.get("title"))
     latest = latest_published_record(history)
-    if not latest:
-        return None
-    published_at = parse_datetime(latest.get("published_at") or latest.get("recorded_at"))
-    if published_at and published_at.astimezone(now.tzinfo).date() == now.date():
-        raise ValueError("今天已经发布过一条：%s；其余素材继续排队" % latest.get("title"))
-    if not latest.get("note_url"):
+    if latest and not latest.get("note_url"):
         raise ValueError("上一条已发布内容缺少真实公开笔记地址；请先运行 attach-note 补齐")
     return latest
 
@@ -167,12 +160,12 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
                 raise ValueError("近期内容重复：%s（%s）" % (duplicate["reason"], duplicate["title"]))
             candidates.append(item)
         queue.enqueue(candidates, out_dir)
-        latest = ensure_daily_available(history, now)
+        latest = ensure_publish_available(history)
         entry = queue.select(latest)
         if not entry:
-            raise ValueError("队列中没有适合今天发布的素材；相似内容继续保留，明天再选")
+            raise ValueError("队列中没有与上一条不相似的素材；相似内容继续保留")
         if tweet_id and str(tweet_id) != entry["source_id"]:
-            raise ValueError("每天只发布当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
+            raise ValueError("publish 仅可生成当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
         item = entry["item"]
 
     candidate = item["candidate"]
@@ -322,7 +315,7 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="finder/finalize 输出目录")
     parser.add_argument("--history-file", default=str(default_history_path()))
     commands = parser.add_subparsers(dest="command", required=True)
-    plan_parser = commands.add_parser("plan", help="全部入选入队，每天只选择最高分且不相似的一条")
+    plan_parser = commands.add_parser("plan", help="全部入选入队，生成下一条最高分且不相似的发布计划")
     plan_parser.add_argument("--tweet-id", help="preview/draft 必填；publish 仅可校验当前自动选择结果")
     plan_parser.add_argument("--action", choices=ACTIONS, default="publish")
     record_parser = commands.add_parser("record", help="仅在网页发布成功或结果待确认后调用")

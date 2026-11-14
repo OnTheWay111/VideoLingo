@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""跨批次的小红书每日单发队列。"""
+"""跨批次的小红书发布队列。"""
 
 import datetime
 import json

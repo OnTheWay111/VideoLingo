@@ -120,7 +120,8 @@ def test_download_report_includes_filename_and_absolute_directory(tmp_path):
     assert manifest["minimum_selected"] == 3
     assert manifest["selection_target"] == 3
     assert manifest["selection_complete"] is False
-    assert "核验入选数量：至少 3 条；每天只发布队列中最高分且不相似的一条；未满足，必须继续搜索" in report
+    assert "daily_publish_limit" not in manifest
+    assert "核验入选数量：至少 3 条；未满足，必须继续搜索" in report
     assert "| 文件名 | 本地路径 | 作者 | 分辨率 | 时长 | 点赞 | 评论 | 链接 |" in report
     assert "`clip.mp4`" in report
     assert "`%s`" % (tmp_path / "videos") in report

@@ -139,7 +139,7 @@ def test_copy_profile_honors_source_profile(tmp_path):
     assert (target / "Default" / "Cookies").read_bytes() == b"profile-one"
 
 
-def test_load_plans_reads_only_current_daily_selection(tmp_path):
+def test_load_plans_reads_only_current_plan(tmp_path):
     plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"
@@ -219,7 +219,7 @@ def test_load_plans_accepts_draft_action(tmp_path):
     assert chrome.load_plans(tmp_path)[0]["action"] == "draft"
 
 
-def test_run_executes_only_one_daily_plan_without_batch_delay(tmp_path, monkeypatch):
+def test_run_executes_only_current_plan_without_batch_delay(tmp_path, monkeypatch):
     plans = tmp_path / "plans"
     plans.mkdir()
     video = tmp_path / "video.mp4"

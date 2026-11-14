@@ -494,7 +494,6 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "max_duration_seconds": args.max_duration,
         "minimum_selected": MIN_PUBLISH_SELECTION,
         "selection_target": target,
-        "daily_publish_limit": 1,
         "model_cooldown_days": 30,
         "brand_limit_per_batch": 1,
         "selection_complete": len(downloads) >= target if target else None,
@@ -542,7 +541,7 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
              "- 生成时间：%s" % now,
              "- 排序：%s（%s）" % (args.sort, SORT_FIELDS[args.sort]),
              "- 视频时长：%s" % duration_rule,
-             "- 核验入选数量：至少 %d 条；每天只发布队列中最高分且不相似的一条；%s" % (
+             "- 核验入选数量：至少 %d 条；%s" % (
                  MIN_PUBLISH_SELECTION, selection_status),
              "- 互动过滤：转发 ≥ %d 且点赞 ≥ %d（默认均为 0，仅作弱参考）；下载前跳过 %d 条" % (
                  getattr(args, "min_reposts", 0), getattr(args, "min_likes", 0),

@@ -145,7 +145,6 @@ def build_topic_plan(records):
         "score_rubric": SCORE_RUBRIC,
         "source_engagement": "weak_reference_only",
         "verified_selection_count": 3,
-        "daily_publish_limit": 1,
         "model_cooldown_days": 30,
         "brand_limit_per_batch": 1,
         "recent_titles": recent_titles,
