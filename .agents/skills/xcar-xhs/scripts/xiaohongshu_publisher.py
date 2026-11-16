@@ -5,7 +5,9 @@ import argparse
 import datetime
 import json
 import sys
+from urllib.parse import urlsplit
 from pathlib import Path
+from publication_runtime import atomic_json, execution_lock
 
 from content_policy import (
     SCORE_THRESHOLD,
@@ -105,8 +107,8 @@ def ensure_publish_available(history):
     if unconfirmed:
         raise ValueError("仍有发布结果待确认：%s；请先核验后台，不能继续发布" % unconfirmed.get("title"))
     latest = latest_published_record(history)
-    if latest and not latest.get("note_url"):
-        raise ValueError("上一条已发布内容缺少真实公开笔记地址；请先运行 attach-note 补齐")
+    if any(record.get("status") == "published" and not record.get("note_url") for record in records):
+        raise ValueError("已发布内容缺少真实公开笔记地址；请先运行 attach-note 补齐")
     return latest
 
 
@@ -215,12 +217,11 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
 def save_plan(out_dir, plan):
     out_dir = Path(out_dir)
     path = out_dir / "xiaohongshu_publish_plan.json"
-    serialized = json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
-    path.write_text(serialized, encoding="utf-8")
+    atomic_json(path, plan)
     execution_path = out_dir / "plans" / ("%s.json" % plan["source_id"])
     if plan.get("status") == "ready" and plan.get("action") in ("publish", "draft"):
         execution_path.parent.mkdir(exist_ok=True)
-        execution_path.write_text(serialized, encoding="utf-8")
+        atomic_json(execution_path, plan)
     elif execution_path.is_file():
         execution_path.unlink()
     return path
@@ -234,12 +235,21 @@ def load_plan(out_dir):
 
 
 def valid_note_url(note_url):
-    return bool(note_url and note_url.startswith(PUBLIC_NOTE_PREFIXES))
+    if not isinstance(note_url, str) or any(char.isspace() for char in note_url):
+        return False
+    try:
+        parsed = urlsplit(note_url)
+    except ValueError:
+        return False
+    parts = parsed.path.strip('/').split('/')
+    return (parsed.scheme == 'https' and parsed.netloc == 'www.xiaohongshu.com'
+            and ((len(parts) == 2 and parts[0] == 'explore' and bool(parts[1]))
+                 or (len(parts) == 3 and parts[:2] == ['discovery', 'item'] and bool(parts[2]))))
 
 
-def record_result(out_dir, history, status="published", note_url="", result_url="", queue=None):
+def record_result(out_dir, history, status="published", note_url="", result_url="", queue=None, plan=None):
     out_dir = Path(out_dir)
-    plan = load_plan(out_dir)
+    plan = plan if plan is not None else load_plan(out_dir)
     if plan.get("action") != "publish":
         raise ValueError("只有 publish 计划可以写入已发布历史")
     if note_url and not valid_note_url(note_url):
@@ -250,6 +260,8 @@ def record_result(out_dir, history, status="published", note_url="", result_url=
         note_url_pending=status == "published" and not note_url,
         **topic_metadata(plan),
     )
+    if note_url and record.get("note_url") != note_url:
+        record = history.update_note_url(plan["source_id"], note_url)
     queue = queue or PublicationQueue(history_path=history.path)
     queue.complete(plan["source_id"], status, note_url)
     receipt = {
@@ -291,11 +303,11 @@ def release_plan(out_dir, history):
     return None
 
 
-def record_draft(out_dir, status="draft_saved", result_url="", draft_history=None):
+def record_draft(out_dir, status="draft_saved", result_url="", draft_history=None, plan=None):
     out_dir = Path(out_dir)
     if status not in ("draft_saved", "unconfirmed_draft"):
         raise ValueError("草稿状态必须是 draft_saved 或 unconfirmed_draft")
-    plan = load_plan(out_dir)
+    plan = plan if plan is not None else load_plan(out_dir)
     if plan.get("action") != "draft":
         raise ValueError("只有 draft 计划可以写入草稿记录")
     history = draft_history or PublishedHistory(default_draft_history_path())
@@ -338,20 +350,21 @@ def main(argv=None):
     out_dir = Path(args.out).resolve()
     history = PublishedHistory(args.history_file)
     try:
-        if args.command == "plan":
-            plan = build_plan(out_dir, args.tweet_id, history, args.action)
-            path = save_plan(out_dir, plan)
-            print(json.dumps({"plan_file": str(path), **plan}, ensure_ascii=False, indent=2))
+        with execution_lock(history.path):
+            if args.command == "plan":
+                plan = build_plan(out_dir, args.tweet_id, history, args.action)
+                path = save_plan(out_dir, plan)
+                print(json.dumps({"plan_file": str(path), **plan}, ensure_ascii=False, indent=2))
+                return 0
+            if args.command == "record-draft":
+                receipt = record_draft(out_dir, args.status, args.result_url)
+            elif args.command == "attach-note":
+                receipt = attach_note(out_dir, history, args.source_id, args.note_url)
+            else:
+                receipt = record_result(out_dir, history, args.status, args.note_url, args.result_url)
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
             return 0
-        if args.command == "record-draft":
-            receipt = record_draft(out_dir, args.status, args.result_url)
-        elif args.command == "attach-note":
-            receipt = attach_note(out_dir, history, args.source_id, args.note_url)
-        else:
-            receipt = record_result(out_dir, history, args.status, args.note_url, args.result_url)
-        print(json.dumps(receipt, ensure_ascii=False, indent=2))
-        return 0
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(1, "错误: %s\n" % exc)
 
 

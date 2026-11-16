@@ -2,6 +2,7 @@
 """通过隔离的 Chrome 配置和 CDP 使用本机小红书登录态发布视频。"""
 
 import argparse
+import contextlib
 import base64
 import datetime
 import json
@@ -16,12 +17,18 @@ import urllib.request
 from pathlib import Path
 
 from content_policy import strip_preset_ai_disclosure
-from publish_history import PublishedHistory, default_history_path
+from publication_runtime import SubmissionJournal, execution_lock, atomic_json
+from publication_queue import PublicationQueue
+from publish_history import PublishedHistory, default_history_path, default_draft_history_path
 from xiaohongshu_publisher import (
+    attach_note,
+    latest_records,
+    ensure_publish_available,
     record_draft,
     record_result,
     release_plan,
     validate_no_material_source_copy,
+    valid_note_url,
 )
 
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -55,16 +62,12 @@ def login_page(text, url):
 
 def publish_success(text, url):
     success_text = any(value in text for value in ("发布成功", "笔记发布成功", "发布完成"))
-    success_url = any(value in url for value in ("/publish/success", "/creator/notes"))
+    success_url = "/publish/success" in url
     return success_text or success_url
 
 
 def public_note_url(url):
-    public_prefixes = (
-        "https://www.xiaohongshu.com/explore/",
-        "https://www.xiaohongshu.com/discovery/item/",
-    )
-    return url if url.startswith(public_prefixes) else ""
+    return url if valid_note_url(url) else ""
 
 
 def draft_success(text):
@@ -84,6 +87,8 @@ class ChromeSession:
         self.seq = 0
         self.publish_clicked = False
         self.draft_clicked = False
+        self.before_submit = None
+        self.after_submit = None
 
     def __enter__(self):
         try:
@@ -254,14 +259,13 @@ class ChromeSession:
         if title != plan["title"]:
             raise RuntimeError("标题复核不一致，未点击发布")
         body = self.evaluate(
-            "Array.from(document.querySelectorAll('textarea,div[contenteditable=true]'))"
-            ".map(element => element.innerText || element.value || '').join('\\n')") or ""
-        normalized_body = " ".join(body.split())
-        expected = [plan["body"][:30], *plan["topics"]]
-        missing = [value for value in expected
-                   if value and " ".join(value.split()) not in normalized_body]
-        if missing:
-            raise RuntimeError("正文或话题复核不一致，未点击发布：%s" % "、".join(missing))
+            "(() => { const element = document.querySelector('textarea[placeholder*=描述], div[contenteditable=true]');"
+            " return element ? (element.value ?? element.innerText ?? '') : ''; })()") or ""
+        expected = plan.get("full_text")
+        if expected is None:  # 兼容旧调用，但仍检查完整正文。
+            expected = "\n".join([plan["body"], " ".join(plan["topics"])])
+        if " ".join(body.split()) != " ".join(expected.split()):
+            raise RuntimeError("正文或话题全文复核不一致，未点击发布")
 
     def editor_present(self):
         return self.evaluate("Boolean(document.querySelector('input[placeholder*=标题]'))")
@@ -302,16 +306,19 @@ class ChromeSession:
         quad = model["content"]
         x = sum(quad[index] for index in (0, 2, 4, 6)) / 4
         y = sum(quad[index] for index in (1, 3, 5, 7)) / 4
+        # 落盘后才发送事件；响应丢失也按结果待确认处理。
+        if self.before_submit:
+            self.before_submit()
+        if button_name == "发布":
+            self.publish_clicked = True
+        else:
+            self.draft_clicked = True
         self.call("Input.dispatchMouseEvent", {
             "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1,
         })
         self.call("Input.dispatchMouseEvent", {
             "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1,
         })
-        if button_name == "发布":
-            self.publish_clicked = True
-        else:
-            self.draft_clicked = True
 
     def prepare_plan(self, out_dir, plan, action="publish"):
         self.navigate_publish()
@@ -338,6 +345,45 @@ class ChromeSession:
         urls = json.loads(value or "[]")
         return next((url for url in urls if public_note_url(url)), "")
 
+    def lookup_public_note(self, title):
+        """后台精确标题唯一匹配；只取页面实际公开链接，缺失时不猜测 ID。"""
+        self.call("Page.navigate", {"url": "https://creator.xiaohongshu.com/creator/notes"})
+        deadline = time.monotonic() + min(self.timeout, 30)
+        while time.monotonic() < deadline:
+            state = self.page_state()
+            if login_page(state.get("text", ""), state.get("url", "")):
+                raise RuntimeError("公开链接补查需要重新登录小红书")
+            candidates = self.evaluate("""(() => {
+                const title = TITLE;
+                const matches = Array.from(document.querySelectorAll('*')).filter(e =>
+                    e.children.length === 0 && (e.innerText || '').trim() === title);
+                return matches.map(e => {
+                    const container = e.closest('a[href], article, [role=listitem], [data-note-id], .note-item, .note-card');
+                    for (const node of (container ? [container] : [])) {
+                        const links = Array.from(node.querySelectorAll('a[href]'));
+                        if (node.matches('a[href]')) links.push(node);
+                        const urls = [...new Set(links.map(a => a.href).filter(url =>
+                            url.startsWith('https://www.xiaohongshu.com/explore/') ||
+                            url.startsWith('https://www.xiaohongshu.com/discovery/item/')))];
+                        if (urls.length) return {title, urls};
+                    }
+                    return {title, urls: []};
+                });
+            })()""".replace('TITLE', json.dumps(title))) or []
+            if len(candidates) > 1:
+                return ""
+            if len(candidates) == 1:
+                if candidates[0].get('title') != title:
+                    return ''
+                urls = list(dict.fromkeys(public_note_url(url) for url in candidates[0].get('urls', [])))
+                urls = [url for url in urls if url]
+                if len(urls) == 1:
+                    return urls[0]
+                if len(urls) > 1:
+                    return ""
+            time.sleep(1)
+        return ""
+
     def publish_plan(self, out_dir, plan):
         self.publish_clicked = False
         self.prepare_plan(out_dir, plan)
@@ -348,10 +394,15 @@ class ChromeSession:
             state = self.page_state()
             if publish_success(state.get("text", ""), state.get("url", "")):
                 after = Path(out_dir) / "browser" / ("%s_after.png" % plan["source_id"])
-                self.screenshot(after)
-                note_url = public_note_url(state.get("url", "")) or self.discover_public_note_url()
-                return {"status": "published", "note_url": note_url,
-                        "result_url": state.get("url", "")}
+                result = {"status": "published", "note_url": public_note_url(state.get("url", "")),
+                          "result_url": state.get("url", "")}
+                if self.after_submit:
+                    self.after_submit(result)
+                try:
+                    self.screenshot(after)
+                except Exception:
+                    pass
+                return result
             time.sleep(2)
         after = Path(out_dir) / "browser" / ("%s_unconfirmed.png" % plan["source_id"])
         self.screenshot(after)
@@ -368,8 +419,14 @@ class ChromeSession:
             state = self.page_state()
             if draft_success(state.get("text", "")):
                 after = Path(out_dir) / "browser" / ("%s_draft.png" % plan["source_id"])
-                self.screenshot(after)
-                return {"status": "draft_saved", "result_url": state.get("url", "")}
+                result = {"status": "draft_saved", "result_url": state.get("url", "")}
+                if self.after_submit:
+                    self.after_submit(result)
+                try:
+                    self.screenshot(after)
+                except Exception:
+                    pass
+                return result
             time.sleep(2)
         after = Path(out_dir) / "browser" / ("%s_draft_unconfirmed.png" % plan["source_id"])
         self.screenshot(after)
@@ -397,11 +454,102 @@ def load_plans(out_dir, only=None):
     return [plan]
 
 
+def recover_submission(history):
+    """恢复已确认结果；提交中断只能阻断，不会自动再次点击。调用方持执行锁。"""
+    journal = SubmissionJournal(history.path)
+    attempt = journal.read()
+    if not attempt or attempt['status'] == 'recorded':
+        return
+    plan, out_dir = attempt['plan'], attempt['out_dir']
+    if attempt['status'] == 'confirmed':
+        result = attempt['result']
+        if plan['action'] == 'draft':
+            record_draft(out_dir, result['status'], result.get('result_url', ''), plan=plan)
+        else:
+            record_result(out_dir, history, result['status'], result.get('note_url', ''),
+                          result.get('result_url', ''), plan=plan)
+        journal.write('recorded', plan, out_dir, result=result)
+        return
+    if attempt['status'] != 'submitting':
+        raise ValueError('未知提交日志状态，停止发布')
+    if plan['action'] == 'draft':
+        drafts = PublishedHistory(default_draft_history_path())
+        latest = next((r for r in reversed(drafts.records())
+                       if str(r.get('source_id')) == str(plan['source_id'])), None)
+        if (latest and latest.get('status') in ('draft_saved', 'failed')
+                and latest.get('recorded_at', '')[:19] >= attempt['updated_at'][:19]):
+            journal.write('recorded', plan, out_dir, resolution=latest['status'])
+            return
+        if not latest or latest.get('status') != 'unconfirmed_draft':
+            record_draft(out_dir, 'unconfirmed_draft', plan=plan)
+        raise RuntimeError('草稿提交结果待确认，必须先核验草稿箱并登记 draft_saved 或 resolve 为 failed；不得重复提交')
+    latest = next((r for r in reversed(history.records())
+                   if str(r.get('source_id')) == str(plan['source_id'])), None)
+    if latest and latest.get('status') == 'failed' and (
+            latest.get('recorded_at', '')[:19] >= attempt['updated_at'][:19]):
+        PublicationQueue(history_path=history.path).release(plan['source_id'], allow_unconfirmed=True)
+        journal.write('recorded', plan, out_dir, resolution='failed')
+        return
+    if latest and latest.get('status') == 'published':
+        record_result(out_dir, history, 'published', latest.get('note_url', ''),
+                      latest.get('result_url', ''), plan=plan)
+        journal.write('recorded', plan, out_dir, resolution='published')
+        return
+    record_result(out_dir, history, 'unconfirmed', plan=plan)
+    raise RuntimeError('上次提交中断，结果待确认；请核验后台后更正历史，禁止自动重发')
+
+
+def recover_note_urls(chrome, out_dir, history):
+    """只为已确认发布的记录补链接，不把标题匹配当成提交成功证据。"""
+    unresolved = []
+    for record in latest_records(history.records()):
+        if record.get('status') != 'published' or record.get('note_url'):
+            continue
+        try:
+            url = chrome.lookup_public_note(record['title'])
+            # 公开地址不能属于另一条已登记内容。
+            if url and any(r.get('note_url') == url and r.get('source_id') != record['source_id']
+                           for r in latest_records(history.records())):
+                url = ''
+            if url:
+                attach_note(out_dir, history, record['source_id'], url)
+                continue
+            reason = '后台没有唯一匹配的公开链接'
+        except Exception as exc:
+            reason = str(exc)
+        unresolved.append({'source_id': record['source_id'], 'title': record['title'], 'reason': reason})
+    return unresolved
+
+
+def release_unsubmitted(out_dir, history):
+    """启动/导航失败也释放计划，但绝不释放已经开始提交的候选。"""
+    attempt = SubmissionJournal(history.path).read()
+    if attempt and attempt['status'] in ('submitting', 'confirmed'):
+        return
+    try:
+        release_plan(out_dir, history)
+    except (OSError, ValueError, KeyError):
+        pass
+
+
 def run(out_dir, history, profile, headless, only=None, preflight=False, timeout=180,
         sleep_fn=time.sleep):
+    with execution_lock(history.path, profile):
+        if not preflight:
+            recover_submission(history)
+        try:
+            return run_locked(out_dir, history, profile, headless, only, preflight, timeout, sleep_fn)
+        except Exception:
+            release_unsubmitted(out_dir, history)
+            raise
+
+
+def run_locked(out_dir, history, profile, headless, only=None, preflight=False, timeout=180,
+               sleep_fn=time.sleep, session=None):
     plans = load_plans(out_dir, only)
     results = []
-    with ChromeSession(profile, headless, timeout) as chrome:
+    context = contextlib.nullcontext(session) if session is not None else ChromeSession(profile, headless, timeout)
+    with context as chrome:
         chrome.navigate_publish()
         print("Chrome 小红书登录态与上传页验证通过", flush=True)
         if preflight:
@@ -413,19 +561,35 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                 results.append({"source_id": plan["source_id"], "title": plan["title"],
                                 "status": "skipped", "match": match})
                 continue
-            (Path(out_dir) / "xiaohongshu_publish_plan.json").write_text(
-                json.dumps(plan, ensure_ascii=False, indent=2) + "\n")
+            atomic_json(Path(out_dir) / "xiaohongshu_publish_plan.json", plan)
             action = plan["action"]
+            if action == "publish":
+                ensure_publish_available(history)
+            chrome.publish_clicked = False
+            chrome.draft_clicked = False
+            journal = SubmissionJournal(history.path)
+            chrome.before_submit = lambda: journal.write('submitting', plan, out_dir)
+            chrome.after_submit = lambda result: journal.write('confirmed', plan, out_dir, result=result)
             print("开始%s：%s" % ("发布" if action == "publish" else "保存草稿", plan["title"]), flush=True)
             try:
                 if action == "draft":
                     result = chrome.draft_plan(out_dir, plan)
-                    receipt = record_draft(out_dir, result["status"], result.get("result_url", ""))
+                    receipt = record_draft(out_dir, result["status"], result.get("result_url", ""), plan=plan)
                 else:
                     result = chrome.publish_plan(out_dir, plan)
                     receipt = record_result(out_dir, history, result["status"], result.get("note_url", ""),
-                                            result.get("result_url", ""))
+                                            result.get("result_url", ""), plan=plan)
+                if result['status'] in ('published', 'draft_saved'):
+                    journal.write('recorded', plan, out_dir, result=result)
+                if result['status'] == 'published' and not result.get('note_url'):
+                    pending = recover_note_urls(chrome, out_dir, history)
+                    result['note_url_pending'] = bool(pending)
+                    match = history.check(plan['source_id'])
+                    if match and match.get('note_url'):
+                        result['note_url'] = match['note_url']
+                        receipt = attach_note(out_dir, history, plan['source_id'], match['note_url'])
                 results.append({"source_id": plan["source_id"], "title": plan["title"],
+                                "note_url_pending": result.get('note_url_pending', False),
                                 "status": result["status"], "note_url": result.get("note_url", ""),
                                 "result_url": result.get("result_url", ""), "receipt": receipt})
                 if result["status"] not in ("published", "draft_saved"):
@@ -444,6 +608,12 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
                     chrome.screenshot(debug_dir / ("%s_error.png" % plan["source_id"]))
                 except Exception:
                     pass
+                attempt = journal.read()
+                if (attempt and attempt['plan']['source_id'] == plan['source_id']
+                        and attempt['status'] in ('confirmed', 'recorded')
+                        and attempt.get('result', {}).get('status') in ('published', 'draft_saved')):
+                    # 成功已落盘，即使后续写历史失败也不能降级成未确认。
+                    raise
                 if chrome.publish_clicked:
                     status = "unconfirmed"
                     receipt = record_result(out_dir, history, "unconfirmed")

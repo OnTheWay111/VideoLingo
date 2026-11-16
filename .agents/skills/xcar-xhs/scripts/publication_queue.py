@@ -122,14 +122,15 @@ class PublicationQueue:
                 write_queue(handle, data)
             return selected
 
-    def release(self, source_id):
+    def release(self, source_id, allow_unconfirmed=False):
         source_id = str(source_id)
         with locked_history(self.path, create=True) as handle:
             if handle is None:
                 return None
             data = read_queue(handle)
             for entry in data["entries"]:
-                if entry.get("source_id") == source_id and entry.get("status") == "planned":
+                if entry.get("source_id") == source_id and entry.get("status") in (
+                        {"planned", "unconfirmed"} if allow_unconfirmed else {"planned"}):
                     entry["status"] = "queued"
                     entry.pop("selected_at", None)
                     write_queue(handle, data)

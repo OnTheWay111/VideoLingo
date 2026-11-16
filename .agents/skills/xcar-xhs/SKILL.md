@@ -18,7 +18,7 @@ license: MIT
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
 | 发布前去重 | `scripts/publish_history.py` + `scripts/content_policy.py` | 原帖 ID 永久去重；同车型、同品牌同改装项目 30 天去重；同品牌每批最多一条 |
 | 发布队列 | `scripts/publication_queue.py` | 固定保存跨批次候选，按评分和与上一条的相似度选择下一条 |
-| 小红书发布 | `scripts/xiaohongshu_publisher.py` + `scripts/chrome_xiaohongshu.py` | 固定复用 Chrome `Default`，只执行当前发布计划并登记，无人工确认环节 |
+| 小红书发布 | `scripts/publish_pipeline.py`（复用现有计划与 Chrome 模块） | 固定复用 Chrome `Default`，只执行当前发布计划并登记，无人工确认环节 |
 | 效果复盘 | `scripts/note_metrics.py` | 24/72 小时记录六项真实数据，计算收藏率和每千次播放新增关注 |
 
 ## 前置条件
@@ -236,23 +236,31 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
 
 ## 自动发布与结果预览
 
-完成下载、抽帧和定稿后，**不得再询问是否发布，也不得要求二次授权确认**。运行一次 `plan` 会把本批全部合格视频加入固定队列，并为当前最高分且不与上一条同品牌、同项目或同系列的一条生成 `action=publish` 计划，随即按下方 Chrome 流程自动发布。登记结果后可再次运行 `plan` 发布下一条，不设每日发布数量上限。只有用户明确要求预演或保存草稿时，才使用 `preview` 或 `draft`；正常流水线不得提供选项后等待回复。
+完成下载、抽帧和定稿后，**不得再询问是否发布，也不得要求二次授权确认**。调用一次 `publish_pipeline.py` 完成入队、当前计划生成、Chrome 会话预检、上传填写、全文复核、发布登记和公开链接补查。默认发布一条，其余留在持久队列；`--max-items N` 指定本次最多逐条发布 N 条，不设每日数量上限。只有用户明确要求预演或保存草稿时才使用 `--action preview` 或 `--action draft`。
 
 普通实车内容不需要 `ai_disclosure`，发布正文不得再附加项目预设的“选题、素材初筛及文字由 AI 辅助整理”等通用 AI 辅助披露；定稿、计划生成和旧计划加载都会删除这句话。只有 AI 生成画面、概念动画等需要明确披露的内容才在 `ai_disclosure` 中填写专项说明（例如“AI 生成画面”或“概念车画面”），不能用翻译或拟人化措辞规避披露。`ai_disclosure` 不得包含“素材来自……”或“素材来源……”等素材来源文案；定稿和计划生成会删除披露字段中的来源句，正文或已有发布计划含来源文案会直接阻断。不再需要 `rights_confirmed` 字段。授权不清的内容在筛选阶段直接淘汰，不通过额外人工确认放行。
 
 ```bash
-# 全部入选入队，默认发布当前选中的一条，无需 --action 或确认参数
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan
+# 正常发布：一次调用，默认发布一条，无需另跑 plan 和 preflight
+python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
+  --out work/xfetch-run
 
-# 仅用户明确要求时保存草稿
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan --tweet-id 原帖ID --action draft
+# 本次最多逐条发布三条；每条成功并补齐公开链接后才继续
+python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
+  --out work/xfetch-run --max-items 3
+
+# 仅用户明确要求草稿或预演时使用；预演不会启动 Chrome
+python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
+  --out work/xfetch-run --action draft --tweet-id 原帖ID
 ```
 
-计划生成器同时写入 `<out>/xiaohongshu_publish_plan.json` 和 `<out>/plans/<原帖ID>.json`，Chrome 只读取前者，不扫描其他候选。全量队列固定在 `state/publish_queue.json`，发布成功后写入 `state/published_videos.jsonl`；用户明确要求草稿时，成功结果写入独立的 `state/draft_videos.jsonl`，草稿不得冒充已发布记录。
+发布入口默认无头 Chrome `Default`，`--headed` 显示隔离浏览器，`--timeout` 默认 180 秒。计划仍写入 `xiaohongshu_publish_plan.json` 和 `plans/<原帖ID>.json`，全量队列仍为 `state/publish_queue.json`。发布和草稿分别登记到 `published_videos.jsonl`、`draft_videos.jsonl`。
 
-当前发布登记完成并补齐真实公开笔记地址后，可再次运行计划命令选择下一条，不受每日一条限制。最高分候选若与上一条同品牌、同改装项目或同系列会顺延，选择下一条不相似内容；不使用 1–10 分钟的批量连续发布间隔。上传前失败会把当前候选释放回队列，点击后结果不明则记为 `unconfirmed` 并阻止后续发布。
+统一回执为 `<out>/publication_pipeline_receipt.json`：`complete` 表示本次正常完成，`note_url_pending` 表示发布成功但链接补查未完成，`incomplete` 表示执行失败或结果未确认，`blocked` 包含具体阻塞原因。非成功状态返回非零退出码，禁止盲目循环重试。回执同时列出 24/72 小时已到期效果任务，不编造或自动填零指标。
+
+进程锁同时保护 Chrome Profile 和共享历史。提交日志位于历史文件旁的 `<历史文件主名>.submission.json`，在发送发布点击前原子写入 `submitting`，出现明确成功证据后写入 `confirmed`，历史和队列登记完成后写入 `recorded`。重启可补齐已确认的登记；`submitting` 不会自动重发，必须核验后台后按故障手册处理。不要删除日志来绕过阻断。
+
+公开链接补查只读取后台中精确标题唯一匹配的笔记卡片实际公开链接；缺失、多条匹配或链接已属于其他历史记录时停止，保留 `note_url_pending`，不猜测笔记 ID。后台结构变化时也可能需要手动 `attach-note`。再次运行统一入口会先补查历史缺失链接，然后才选择新内容。
 
 完成后的入选表“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题预览入选视频；同时标明哪一条已发布、哪些仍在队列。文件名和所在目录继续保留。预览是结果交付，不是发布前的等待环节。
 
@@ -266,34 +274,22 @@ python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
 
 **固定历史文件**：`.agents/skills/xcar-xhs/state/published_videos.jsonl`。手工发布过的内容先用 `publish_history.py add --source-id ... --title ... --brand ... --model ... --modification-project ...` 登记。finder 默认在任何下载前按原帖唯一 ID 过滤，命中项写入 manifest 的 `publish_skipped`；定稿和入队时再按品牌、具体车型、改装项目及规范化标题去重。自动模式的实际发布登记会保存栏目、系列、品牌、车型、项目、事实和评分，供后续轮动与复盘；预演和搜索不消耗期数。
 
-定稿后运行一次不带 `--tweet-id` 的计划命令，三条全部入队并生成一条当前发布计划；登记结果后可再次运行，不受每日一条限制：
+### 发布执行与排障入口
 
-```bash
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan
-```
+定稿后统一调用上面的 `publish_pipeline.py`。旧 `xiaohongshu_publisher.py plan` 和 `chrome_xiaohongshu.py` 保留供排障使用，正常任务不要再由 Agent 分别串联。旧 Chrome 入口同样获取执行锁并检查提交日志，不能用 `--only` 绕过队列。
 
-计划命令本身不操作网页；它生成 `action=publish` 的 `<out>/xiaohongshu_publish_plan.json`，并自动保存到 `<out>/plans/<原帖ID>.json`。随后必须继续执行下方 Chrome 发布流程，不能停在计划阶段等待人工确认。
+发布直接访问视频上传页 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`。脚本复制 Chrome `Default` 的会话文件到临时隔离配置，在同一会话内预检并发布；原 Chrome 配置和标签页不修改，退出清理临时配置，不输出 Cookie 值。
 
-### 固定复用 Chrome Default 小红书登录态
+填写后核对完整标题及 `full_text`（正文、讨论问题、专项披露和话题，仅归一化空白），等待上传完成和无障碍树按钮启用后发送真实鼠标事件。只有明确成功提示或 `/publish/success` 才算成功，进入笔记管理页本身不算。`result_url` 与真实公开 `note_url` 分别保存。
 
-生成当前发布计划后，直接验证会话并只执行这一条：
+独立登录诊断仍可使用已有当前计划执行：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
   --out work/xfetch-run --headless --preflight-only
-
-python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
-  --out work/xfetch-run --headless --timeout 90
 ```
 
-发布导航直接访问 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`，不经过创作者首页或菜单跳转；发布计划中的 `publish_url` 使用同一地址。
-
-`chrome_xiaohongshu.py` 固定复制本机 Chrome `Default` 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，启动独立 Chrome，通过 CDP 上传和填写，使用正常 Chrome 标识，等待无障碍树中的发布按钮真正启用后发送真实鼠标事件。原 Chrome 配置和标签页不被修改，初始化或发布异常时也清理临时配置，Cookie 值不打印、不写入报告。`--browser-profile` 默认固定为 `Default`；可省略 `--headless` 显示隔离浏览器，`--only <原帖ID>` 只执行一条。
-
-Chrome 不再按 manifest 批量执行，只读取当前发布计划。填写后复读标题、正文和话题，发布按钮必须处于启用状态。`result_url` 保存发布结果页，`note_url` 只保存真实公开笔记地址，不能把 `/publish/success` 当作分享链接；成功页没有公开地址时会尝试读取页面中的公开笔记链接。实测故障、根因和检查清单统一查阅 [小红书 Chrome 发布实测经验与故障手册](references/xiaohongshu-chrome-troubleshooting.md)，修改发布逻辑后按手册完成回归。
-
-脚本逐条检查历史，成功页明确出现后才登记 `published`。点击后结果不明时登记 `unconfirmed` 并停止后续发布。只有在后台确认实际未发布时，才可运行 `publish_history.py resolve --source-id ... --title ... --reason ...` 将误记更正为 `failed` 后重试；`failed` 不再阻止重试，最新状态优先于历史状态。
+发生错误、结果不明或链接待补查时，阅读 [小红书 Chrome 发布实测经验与故障手册](references/xiaohongshu-chrome-troubleshooting.md)。只有后台确认实际未发布时才可用 `publish_history.py resolve` 更正为 `failed`；统一入口重启后将对应待确认候选释放回队列。
 
 ### 公开笔记地址与 24/72 小时效果
 
@@ -331,8 +327,8 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
    - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。运行 `finalize.py` 时会根据画面标注和明显讲解文字自动完成讲解视频的移动与淘汰记录，不能只把分数调低后仍留在入选清单。
    - **数量闭环**：每淘汰一条就检查合格入选数；不足 3 条时继续增加 `--pages`、补充同义 `--query`、扩大同栏目车型/场景检索并下载抽帧，直到至少 3 条全部通过核验。候选耗尽或接口受限只能报告阻塞，不能定稿、发布不足 3 条的名单或降低标准凑数。
 5. 确认最终入选至少 3 条后，为入选、淘汰记录撰写标题、正文、品牌、具体车型、改装项目、事实来源、讨论问题、五项评分和具体话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字并包含 `title_detail`，正文必须原样包含 `verifiable_fact`。定稿器再执行同品牌每批一条、同车型/项目 30 天和队列去重。
-6. 定稿后运行一次不带 `--tweet-id` 的 `plan`，把合格视频全部加入 `state/publish_queue.json`，生成当前最高分且不相似的一条计划。固定复用 Chrome `Default` 的小红书登录态，先 preflight 再直接发布这一条；不得询问“自动发布/自动保存草稿”，不得要求 `rights_confirmed` 或其他二次授权确认。其余视频留在队列；登记当前结果并补齐公开笔记地址后，可再次运行计划继续发布，不设每日一条限制；结果不明时停止后续操作。
-7. 发布成功必须保存真实公开笔记地址；成功页拿不到时用 `attach-note` 补登记，未补齐会阻止后续发布。运行 `note_metrics.py due` 检查 24/72 小时任务，到期后记录六项真实数据并复盘收藏率和每千次播放新增关注。
+6. 定稿后调用一次 `publish_pipeline.py --out <out>`，默认发布一条，其余排队；需要本次继续逐条发布时用 `--max-items N`。无需 Agent 分别调用 plan、preflight、Chrome 和登记命令。脚本按评分、多样性和历史选择当前计划，任何异常或待确认立即停止，不要求二次授权确认。
+7. 检查 `publication_pipeline_receipt.json`：公开链接自动补查失败时按故障手册核验并 `attach-note`，不得重复发布；回执 `metrics` 给出 24/72 小时到期任务，按下方说明采集六项真实数据并复盘。
 8. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。明确标注本次已发布内容及其余排队状态，附队列、笔记 URL、历史与效果文件路径。提醒版权与平台条款。
 
 ## 最终汇报格式（X 汽车完整流水线必选）

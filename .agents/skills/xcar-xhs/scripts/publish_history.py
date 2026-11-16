@@ -182,8 +182,11 @@ def main(argv=None):
             return 1 if match else 0
         if args.command == "resolve":
             match = history.check(args.source_id, args.title)
-            if not match or match.get("status") != "unconfirmed":
-                raise ValueError("只有 unconfirmed 记录可以更正为 failed")
+            if not match:
+                match = next((record for record in reversed(history.records())
+                              if str(record.get("source_id")) == str(args.source_id)), None)
+            if not match or match.get("status") not in ("unconfirmed", "unconfirmed_draft"):
+                raise ValueError("只有 unconfirmed 或 unconfirmed_draft 记录可以更正为 failed")
             record = history.add(args.source_id, args.title, match.get("source_url", ""),
                                  "failed", resolution_reason=args.reason)
             print(json.dumps(record, ensure_ascii=False, indent=2))

@@ -29,9 +29,9 @@
 3 条是候选池数量，不是每日发布数量上限：
 
 - `finalize.py` 按总分降序整理本批入选。
-- `xiaohongshu_publisher.py plan` 把本批全部入选加入 `state/publish_queue.json`，生成下一条发布计划。
+- `publish_pipeline.py` 内部调用计划模块，把本批全部入选加入 `state/publish_queue.json`，生成下一条发布计划。
 - 当前最高分候选若与上一条同品牌、同改装项目或同系列，则保留在队列，改选下一条不相似内容。
-- 当前发布登记完成并补齐公开笔记地址后，可再次运行计划命令，旧队列与新批次一起参与评分选择，不设每日一条限制。
+- 当前发布登记完成并补齐公开笔记地址后，统一入口可继续生成下一条计划（`--max-items N`），旧队列与新批次一起参与评分选择，不设每日一条限制。
 - 每次只执行当前计划，不扫描 `plans/` 批量发布，也不使用两条之间 1–10 分钟的随机等待。
 - 上传或填写失败且尚未点击发布时，候选释放回队列；点击后结果不明记为 `unconfirmed`，必须先核验后台。
 
@@ -111,11 +111,11 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
   --out work/xfetch-run --publish-file work/xfetch-run/publish.json
 ```
 
-全部入选入队并生成下一条发布计划：
+定稿后一次调用完成入队、预检、发布和公开链接补查：
 
 ```bash
-python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
-  --out work/xfetch-run plan
+python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
+  --out work/xfetch-run
 ```
 
 输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/<原帖ID>.json`。Chrome 只读取当前发布计划，不扫描目录里的其他计划。标题超长、事实未写入正文、来源缺失、评分不完整、话题数量不符或视频缺失都会直接阻断。
@@ -124,21 +124,11 @@ python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
 
 ## 六、Chrome Default 自动执行
 
-小红书登录态固定复用本机 Chrome `Default`，不询问浏览器或 Profile：
+小红书登录态固定复用本机 Chrome `Default`，统一入口默认无头执行，`--headed` 可显示隔离浏览器。内部只复制会话文件，不修改原浏览器，不输出 Cookie 值。一次运行复用同一个会话，默认发布一条；`--max-items N` 指定本次最多逐条发布数量。
 
-```bash
-python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
-  --out work/xfetch-run --headless --preflight-only
+脚本在发送点击前持久化提交状态，标题和完整正文复读一致、上传完成、按钮启用后才执行。仅明确成功提示或成功页构成成功证据；笔记管理页不算成功。新旧入口共用执行锁，提交中断后先核验后台，不自动重发。
 
-python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
-  --out work/xfetch-run --headless --timeout 90
-```
-
-脚本只复制 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，通过 CDP 操作独立 Chrome，不修改原浏览器配置或标签页，不输出 Cookie 值。去掉 `--headless` 可显示隔离浏览器；`--only` 只能核对当前发布计划，不能绕过队列选其他素材。
-
-执行流程：直接打开视频发布页，上传并等待转码完成，填入标题正文和话题，复读核验，等待发布按钮启用后发送真实鼠标事件。只有页面出现明确成功状态才登记 `published`。任何待确认或错误都停止操作，不能并发点击。
-
-`result_url` 是发布结果页，`note_url` 只能是 `/explore/` 或 `/discovery/item/` 的真实公开笔记地址。成功页没有公开地址时，脚本会尝试读取页面内的公开笔记链接；仍拿不到则保存 `note_url_pending=true`，后续发布前必须补齐。
+`result_url` 是发布结果页，`note_url` 是真实公开地址。成功页未给出公开地址时，脚本按精确标题唯一匹配后台卡片实际链接；缺失或歧义保留 `note_url_pending` 并停止后续发布。`publication_pipeline_receipt.json` 保存结果与 24/72 小时到期任务。后台页面适配失败时按故障手册补查，不猜测地址。
 
 实测问题与异常处理见 [Chrome 发布故障手册](xiaohongshu-chrome-troubleshooting.md)。
 

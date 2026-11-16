@@ -42,7 +42,7 @@ def test_navigate_publish_uses_direct_video_url():
 
 def test_publish_success_requires_explicit_success_state():
     assert chrome.publish_success("笔记发布成功", "https://creator.xiaohongshu.com/publish")
-    assert chrome.publish_success("", "https://creator.xiaohongshu.com/creator/notes")
+    assert not chrome.publish_success("", "https://creator.xiaohongshu.com/creator/notes")
     assert not chrome.publish_success("发布笔记 上传视频", "https://creator.xiaohongshu.com/publish")
 
 

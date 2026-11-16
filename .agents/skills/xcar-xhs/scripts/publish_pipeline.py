@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""定稿后一次调用：恢复、入队、预检、逐条发布、补链接和输出回执。"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from chrome_xiaohongshu import ChromeSession, recover_note_urls, recover_submission, release_unsubmitted, run_locked
+from note_metrics import NoteMetrics
+from publication_runtime import atomic_json, execution_lock
+from publish_history import PublishedHistory, default_history_path
+from xiaohongshu_publisher import build_plan, ensure_publish_available, save_plan
+
+
+def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True,
+                 timeout=180, action='publish', tweet_id=None):
+    if timeout <= 0:
+        raise ValueError('timeout 必须大于零')
+    if max_items < 1 or (action != 'publish' and max_items != 1):
+        raise ValueError('发布数量必须大于零；预演和草稿仅处理一条')
+    out_dir = Path(out_dir).resolve()
+    if not out_dir.is_dir():
+        raise ValueError('定稿输出目录不存在')
+    results = []
+    summary = {'status': 'complete', 'results': results, 'published': 0}
+    with execution_lock(history.path, profile):
+        try:
+            if action == 'preview':
+                plan = build_plan(out_dir, tweet_id, history, action)
+                save_plan(out_dir, plan)
+                summary['plan'] = plan
+                return summary
+            recover_submission(history)
+            with ChromeSession(profile, headless, timeout) as chrome:
+                chrome.navigate_publish()  # 同一会话完成预检和发布。
+                if action == 'publish':
+                    pending = recover_note_urls(chrome, out_dir, history)
+                    if pending:
+                        summary.update(status='note_url_pending', pending=pending)
+                        return summary
+                    ensure_publish_available(history)
+                for _ in range(max_items):
+                    plan = build_plan(out_dir, tweet_id, history, action)
+                    save_plan(out_dir, plan)
+                    if plan['status'] != 'ready':
+                        summary.update(status='skipped', plan=plan)
+                        break
+                    result = run_locked(out_dir, history, profile, headless,
+                                        timeout=timeout, session=chrome)
+                    results.extend(result['results'])
+                    summary['published'] += result['published']
+                    if result['status'] != 'complete':
+                        summary['status'] = 'incomplete'
+                        break
+                    pending = [r for r in result['results'] if r.get('note_url_pending')]
+                    if pending:
+                        summary.update(status='note_url_pending', pending=pending)
+                        break
+                    # 历史已跳过的计划不能在同次运行中反复执行。
+                    if not result['published'] and action == 'publish':
+                        summary['status'] = 'skipped'
+                        break
+        except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            if action != 'preview':
+                release_unsubmitted(out_dir, history)
+            summary.update(status='blocked', error=str(exc))
+        finally:
+            try:
+                summary['metrics'] = NoteMetrics(history.path.with_name('note_metrics.jsonl')).due(history)
+            except (OSError, ValueError, KeyError) as exc:
+                summary['metrics_error'] = str(exc)
+            atomic_json(out_dir / 'publication_pipeline_receipt.json', summary)
+    return summary
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--history-file', default=str(default_history_path()))
+    parser.add_argument('--max-items', type=int, default=1, help='本次最多发布几条，不是每日限制')
+    parser.add_argument('--browser-profile', default='Default')
+    parser.add_argument('--headed', action='store_true', help='显示隔离 Chrome，默认无头')
+    parser.add_argument('--timeout', type=int, default=180)
+    parser.add_argument('--action', choices=('publish', 'preview', 'draft'), default='publish')
+    parser.add_argument('--tweet-id', help='preview/draft 必填')
+    args = parser.parse_args(argv)
+    try:
+        summary = run_pipeline(args.out, PublishedHistory(args.history_file), args.max_items,
+                               args.browser_profile, not args.headed, args.timeout,
+                               args.action, args.tweet_id)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0 if summary['status'] in ('complete', 'skipped') else 2
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        print(json.dumps({'status': 'blocked', 'error': str(exc)}, ensure_ascii=False))
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
