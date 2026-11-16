@@ -64,15 +64,27 @@ class Backend:
 
 
 def make_queries(plan):
-    queries = list(plan['queries'])
-    series = next(s for s in PILLARS[plan['pillar']]['series'] if s['id'] == plan['series_id'])
-    # 使用同一系列词表展开检索，不改变系列来凑数量。
-    for group in series['query_groups']:
-        for phrase in re.findall(r'"([^"]+)"', group):
-            query = '"%s" filter:media %s' % (phrase, NEGATIVE_FILTERS)
-            if query not in queries:
-                queries.append(query)
-    return queries
+    # 车型、动作与排除条件共同定义系列，拆出单个短语会丢失检索范围。
+    return list(dict.fromkeys(plan['queries']))
+
+
+def retire_unscoped_queries(state, explicit_queries):
+    """恢复旧任务时归档自动拆出的短语查询，保留原查询和显式补充查询。"""
+    plan_queries = state['plan']['queries']
+    preserved = set(plan_queries) | set(explicit_queries)
+    legacy = {
+        '"%s" filter:media %s' % (phrase, NEGATIVE_FILTERS)
+        for group in plan_queries for phrase in re.findall(r'"([^"]+)"', group)
+    }
+    active = []
+    for query in state['queries']:
+        if query['query'] in legacy and query['query'] not in preserved:
+            state.setdefault('retired_queries', []).append({
+                **query, 'reason': '旧版短语扩展丢失系列约束或包含正向排除词',
+            })
+        else:
+            active.append(query)
+    state['queries'] = active
 
 
 def review_request(state, out):
@@ -236,6 +248,7 @@ def run_pipeline(args, backend=None):
             raise ValueError('恢复任务不能切换发布历史')
         for key, value in state.get('settings', {}).items():
             setattr(args, key, value)
+        retire_unscoped_queries(state, args.query)
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
                 state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False})

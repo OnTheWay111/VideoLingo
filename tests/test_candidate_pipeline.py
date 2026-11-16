@@ -37,6 +37,28 @@ def tweet(source_id):
             'author': {'screen_name': 'car'}, 'media': [{'type': 'video', 'url': 'https://example.com/v'}]}
 
 
+def test_query_expansion_preserves_model_action_and_negative_constraints():
+    query = '("Honda N-VAN" OR "Daihatsu Atrai") "folding seats" filter:media ' + pipeline.NEGATIVE_FILTERS
+    assert pipeline.make_queries({'queries': [query, query]}) == [query]
+
+
+def test_resume_archives_unscoped_queries_without_losing_progress_or_explicit_queries():
+    original = '("Honda N-VAN" OR "Daihatsu Atrai") "folding seats" filter:media ' + pipeline.NEGATIVE_FILTERS
+    bare = '"folding seats" filter:media ' + pipeline.NEGATIVE_FILTERS
+    forbidden = '"car show" filter:media ' + pipeline.NEGATIVE_FILTERS
+    explicit = '"Honda N-VAN" filter:media ' + pipeline.NEGATIVE_FILTERS
+    queries = [{'query': q, 'pages': 1, 'cursor': 'saved', 'done': False}
+               for q in [original, bare, forbidden, explicit]]
+    state = {'plan': {'queries': [original]}, 'queries': queries, 'items': {'known': {'status': 'approved'}}}
+    pipeline.retire_unscoped_queries(state, [explicit])
+    assert [q['query'] for q in state['queries']] == [original, explicit]
+    assert [q['query'] for q in state['retired_queries']] == [bare, forbidden]
+    assert all(q['cursor'] == 'saved' and q['pages'] == 1 for q in state['retired_queries'])
+    assert state['items'] == {'known': {'status': 'approved'}}
+    pipeline.retire_unscoped_queries(state, [explicit])
+    assert len(state['retired_queries']) == 2
+
+
 class FakeBackend:
     def __init__(self, pages=None):
         self.pages = pages or [([tweet(1), tweet(2), tweet(3)], None)]
