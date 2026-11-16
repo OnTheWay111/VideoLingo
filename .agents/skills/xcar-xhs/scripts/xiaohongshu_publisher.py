@@ -185,6 +185,11 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
         if tweet_id and str(tweet_id) != entry["source_id"]:
             raise ValueError("publish 仅可生成当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
         item = entry["item"]
+        duplicate = content_duplicate(content_identity(item), latest_records(history.records()),
+                                      now=now, statuses=ACTIVE_STATUSES)
+        if duplicate:
+            queue.release(entry['source_id'])
+            raise ValueError("近期内容重复：%s（%s）" % (duplicate['reason'], duplicate['title']))
 
     if action == 'publish' and item.get('topic_series_id') and not item.get('topic_series_episode'):
         series_records = [record for record in latest_records(history.records())

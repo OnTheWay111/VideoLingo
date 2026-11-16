@@ -235,7 +235,12 @@ class PublicationQueue:
         with locked_queue(self.path) as handle:
             data = read_queue(handle)
             for entry in data['entries']:
-                if entry.get('status') != 'queued':
+                legacy_gate = (entry.get('status') == 'needs_review' and
+                               entry.get('maintenance_reason') in (
+                                   '入池必须有 approved / car_only 视觉核验结论',
+                                   '核验缺少依据：rights_evidence',
+                                   'rights_source 必须记录实际授权依据链接'))
+                if entry.get('status') != 'queued' and not legacy_gate:
                     continue
                 item = entry.get('item') or {}
                 path = Path((item.get('video') or {}).get('file') or '/nonexistent')
@@ -253,6 +258,8 @@ class PublicationQueue:
                             status, reason = 'needs_review', '核验已超过复核期限'
                     except (OSError, ValueError, KeyError) as exc:
                         status, reason = 'needs_review', str(exc)
+                if not status and legacy_gate:
+                    status, reason = 'queued', '发布兼容复核通过，恢复旧门禁误拦截候选'
                 if status:
                     entry.update(status=status, maintenance_reason=reason, updated_at=utc_now(),
                                  revision=entry.get('revision', 1) + 1)

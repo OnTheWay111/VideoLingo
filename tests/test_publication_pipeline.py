@@ -378,7 +378,8 @@ def test_existing_legacy_candidate_publishes_without_reenqueue(tmp_path, setup_p
     queue = PublicationQueue(history_path=history.path)
     data = json.loads(queue.path.read_text())
     entry = data['entries'][0]
-    entry['status'] = 'queued'
+    entry['status'] = 'needs_review'
+    entry['maintenance_reason'] = '入池必须有 approved / car_only 视觉核验结论'
     entry['item']['verification'] = {'status': 'verified', 'presentation': 'car_only'}
     queue.path.write_text(json.dumps(data))
     manifest_path = tmp_path / 'manifest.json'
