@@ -8,7 +8,7 @@ from pathlib import Path
 from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 6
+STRATEGY_VERSION = 7
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -43,6 +43,24 @@ PILLARS = {
                     '("Koenigsegg Regera" OR "Pagani Huayra" OR "Bugatti Divo")',
                 ),
             },
+            {
+                "id": "screen_game_cars",
+                "label": "电影与游戏名车的实车细节",
+                "query_groups": (
+                    '("DeLorean DMC-12" OR "Aston Martin DB5") (walkaround OR details OR replica)',
+                    '("AE86" "Initial D" OR "Peugeot 406" "Taxi") (replica OR build OR details)',
+                    '("Porsche 911 Turbo" "Cyberpunk" OR "BMW M3 GTR" "Need for Speed") (replica OR build OR "real life")',
+                ),
+            },
+            {
+                "id": "rare_performance_wagons",
+                "label": "少见的原厂性能旅行车",
+                "query_groups": (
+                    '("Volvo 850 T-5R" OR "Audi RS2 Avant") (walkaround OR details OR engine)',
+                    '("MG ZT-T 260" OR "Subaru Legacy GT-B") (walkaround OR details OR engine)',
+                    '("Mitsubishi Legnum VR-4" OR "Nissan Stagea 260RS") (walkaround OR details OR engine)',
+                ),
+            },
         ),
     },
     "mechanical_contrast": {
@@ -65,6 +83,33 @@ PILLARS = {
                     '("widebody build" OR "custom widebody" OR "wide body fabrication")',
                     '("custom fabrication" OR "hand built car" OR "coachbuilt")',
                     '("exhaust fabrication" OR "custom exhaust" OR "titanium exhaust")',
+                ),
+            },
+            {
+                "id": "car_mechanisms",
+                "label": "汽车机关图鉴",
+                "query_groups": (
+                    '("retractable door" OR "pop up headlights" OR "pop-up headlights") (car OR coupe OR roadster)',
+                    '("BMW Z1" door OR "Toyota Sera" doors OR "Saab Aero X" canopy)',
+                    '("active aero" OR "active rear wing" OR "retractable spoiler") (car OR supercar OR Porsche)',
+                ),
+            },
+            {
+                "id": "classic_restoration",
+                "label": "经典车修复前后",
+                "query_groups": (
+                    '("barn find restoration" OR "first start after years") (car OR "classic car")',
+                    '("dry ice blasting" OR "dry ice cleaning") (undercarriage OR "classic car")',
+                    '("paint correction" OR "car restoration") ("before after" OR "before and after" OR timelapse)',
+                ),
+            },
+            {
+                "id": "offroad_equipment",
+                "label": "越野装备怎么工作",
+                "query_groups": (
+                    '("differential lock" OR "locking differential") (articulation OR "cross axle") (car OR SUV OR 4x4)',
+                    '("Land Rover Defender" OR "Suzuki Jimny") ("suspension articulation" OR "cross axle")',
+                    '("Jeep Wrangler" OR "Ford Bronco") ("sway bar disconnect" OR "stabilizer bar disconnect")',
                 ),
             },
         ),
@@ -98,6 +143,15 @@ PILLARS = {
                     '("mountain road" OR "mountain pass" OR "mountain drive") (car OR supercar OR JDM)',
                     '("touge" OR "canyon drive" OR "canyon road") (car OR supercar OR JDM)',
                     '("mountain road POV" OR "mountain drive POV" OR "touge POV") (car OR supercar OR JDM)',
+                ),
+            },
+            {
+                "id": "small_car_space",
+                "label": "小车大空间",
+                "query_groups": (
+                    '("Honda N-VAN" OR "Daihatsu Atrai") ("flat floor" OR "seat folding" OR "folding seats")',
+                    '("Suzuki Every" OR "Honda N-VAN") ("camper conversion" OR "camper interior")',
+                    '("Toyota Roomy" OR "Daihatsu Tanto" OR "Honda N-Box") ("sliding door" OR "seat folding" OR "interior space")',
                 ),
             },
         ),

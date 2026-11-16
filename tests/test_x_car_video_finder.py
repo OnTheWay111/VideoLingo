@@ -433,7 +433,7 @@ def test_auto_topic_plan_includes_mountain_driving_series():
 
     plan = topic_planner.build_topic_plan(records)
 
-    assert plan["strategy_version"] == 6
+    assert plan["strategy_version"] == 7
     assert plan["score_rubric"] == {
         "first_three_seconds": 25,
         "knowledge_point": 25,
