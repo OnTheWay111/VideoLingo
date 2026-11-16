@@ -391,15 +391,14 @@ def test_existing_legacy_candidate_publishes_without_reenqueue(tmp_path, setup_p
     assert result['status'] == 'complete'
 
 
-def test_publication_review_omits_rights_but_ingestion_still_validates(tmp_path, setup_plan):
+def test_ingestion_and_publication_omit_rights_but_validate_media(tmp_path, setup_plan):
     from candidate_review import validate_review, validate_publication_review
     history, plan = setup_plan
     item = PublicationQueue(history_path=history.path).records()[0]['item']
     item['verification'].pop('rights_evidence')
     item['verification'].pop('rights_source')
     validate_publication_review(item)
-    with pytest.raises(ValueError, match='rights_evidence'):
-        validate_review(item)
+    validate_review(item)
     item['verification']['video_sha256'] = 'changed'
     with pytest.raises(ValueError, match='视频已变化'):
         validate_publication_review(item)

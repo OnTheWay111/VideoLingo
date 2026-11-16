@@ -26,7 +26,7 @@ def content_digest(item):
     return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def validate_review(item, check_digest=True, require_rights=True):
+def validate_review(item, check_digest=True, require_rights=False):
     review = item.get('verification') or {}
     if review.get('status') != 'approved' or review.get('presentation') != 'car_only':
         raise ValueError('入池必须有 approved / car_only 视觉核验结论')

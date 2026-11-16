@@ -147,11 +147,11 @@ def test_missing_review_evidence_and_changed_video_block(tmp_path):
     pipeline.run_pipeline(args, backend)
     args.review_file = review_all(args.out)
     review = json.loads(Path(args.review_file).read_text())
-    review['items']['1']['verification']['rights_evidence'] = ''
+    review['items']['1']['verification']['fact_evidence'] = ''
     Path(args.review_file).write_text(json.dumps(review))
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'blocked'
-    assert 'rights_evidence' in result['error']
+    assert 'fact_evidence' in result['error']
     args.review_file = review_all(args.out)
     Path(review['items']['1']['video']['file']).write_bytes(b'changed')
     renewed = pipeline.run_pipeline(args, backend)

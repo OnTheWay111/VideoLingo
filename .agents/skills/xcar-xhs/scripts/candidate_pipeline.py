@@ -90,7 +90,7 @@ def review_request(state, out):
                         'score_breakdown': {}},
             'verification': {'presentation': '', 'reviewer': '', 'reviewed_at': '',
                              'visual_evidence': '', 'first_three_seconds_evidence': '',
-                             'fact_evidence': '', 'rights_evidence': '', 'rights_source': '',
+                             'fact_evidence': '',
                              'series_evidence': '', 'score_reasons': {}},
         }
     atomic_json(out / 'review_request.json', {'job_id': state['job_id'], 'topic_plan': state['plan'],

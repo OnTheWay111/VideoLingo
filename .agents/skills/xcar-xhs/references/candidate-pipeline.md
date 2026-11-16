@@ -4,7 +4,7 @@
 
 `candidate_pipeline.py --out <新目录>` 自动选题、增量搜索、下载抽帧；需要内容判断时输出 `review_request.json` 并返回 `awaiting_review`。Agent 完成逐条核验及文案，保存独立 `review.json`，用 `--review-file` 恢复。到至少三条合格后自动定稿并全部入候选池；从不调用发布浏览器，也不创建发布计划。
 
-审核是 Agent 的工作，不是新增人工授权环节。不能用固定分数、虚构来源或“官方账号”等表述代替实际授权证据；缺少证据的素材淘汰，不能填满字段就宣称事实已核查。脚本检查证据结构和一致性，不判断证据真伪。
+审核是 Agent 的工作，不是新增人工授权环节。不校验可追溯转载许可，不要求 rights_evidence 或 rights_source，不因缺少许可字段淘汰。仍须真实核查画面、事实与评分，不得用固定分数或虚构来源填写证据。脚本检查证据结构和一致性，不判断证据真伪。
 
 ## 审核文件
 
@@ -15,7 +15,7 @@
 - `verification.presentation`: 合格只能为 `car_only`；人物/屏幕讲解淘汰。
 - `verification.reviewer`、`reviewed_at`: 实际审核者标识及带时区 ISO 8601 时间。
 - `visual_evidence`、`first_three_seconds_evidence`: 对画面及前三秒的具体观察。默认五帧覆盖约 0.5、1.5、2.5 秒和中后段，必要时观看视频确认运动、声音和画面完整性。
-- `fact_evidence`: 来源如何支持正文事实；`rights_evidence` 与 `rights_source`: 实际授权依据和可追溯链接；`series_evidence`: 内容为何符合本次系列。
+- `fact_evidence`: 来源如何支持正文事实；`series_evidence`: 内容为何符合本次系列。
 - `score_reasons`: 必须包含 `first_three_seconds`、`knowledge_point`、`save_value`、`discussion_question`、`recent_diversity` 五项具体理由。
 
 脚本验证媒体哈希，规范化文案后绑定内容哈希。正文、视频变化必须重审；单纯文件改名不会使审核失效。没有有效前三秒/中后段抽帧或证据不完整时阻断，不能直接入池。低分和明显禁选会被淘汰，重复项在定稿前再次核查。
