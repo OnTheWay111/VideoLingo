@@ -1,14 +1,14 @@
 ---
 name: xcar-xhs
-description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、发布历史下载前去重，以及复用本机 Chrome Default 登录态上传并发布视频。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
+description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、断点递补、核验后只保存候选池；用户明确要求发布时复用本机 Chrome Default 上传并发布。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
 # X 汽车视频搜索与下载（xcar-xhs）
 
-把一句自然语言提示词或内置账号策略变成「自动选题计划 → X 检索式 → 原帖与车型级去重 → 汽车相关性过滤 → 弱参考排序 → 下载 → 抽帧核验 → 标题正文定稿 → 跨批次排队 → 逐条发布 → 公开笔记与效果登记」的完整流水线。用户没有给选题时直接使用 `--auto-topic`，不要先追问主题；通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
+把一句自然语言提示词或内置账号策略变成「库存感知自动选题 → 增量 X 检索 → 下载前去重 → 下载抽帧 → Agent 核验与文案 → 可恢复定稿 → 只保存跨批次候选池」的流水线。默认入池即完成，不生成发布计划、不启动小红书浏览器；仅用户明确要求发布时进入独立发布流程。用户没有给选题时直接使用 `candidate_pipeline.py`，不要先追问主题；通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
-**每次正式任务仍须核验并入选至少 3 个视频；发布按评分与多样性逐条进行，不设每日发布数量上限，其余进入持久队列。** 下载失败、超时、选题不达标、画面不合格、重复或版权不清都只淘汰当前候选，不减少 3 条核验数量要求；必须继续翻页、补充同义检索式并扩大同栏目车型/场景搜索，递补到至少 3 个合格视频后才能定稿。不得用低分、禁选或授权不清素材凑数。
+**每次正式候选任务须核验并入选至少 3 个视频，全部保存到持久队列；默认不发布。** 下载失败、超时、选题不达标、画面不合格、重复或版权不清都只淘汰当前候选，不减少 3 条核验数量要求；必须继续翻页、补充同义检索式并扩大同栏目车型/场景搜索，递补到至少 3 个合格视频后才能定稿。不得用低分、禁选或授权不清素材凑数。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
@@ -17,7 +17,8 @@ license: MIT
 | 下载媒体 | `yt-dlp` | 使用同一 Chrome `Default` 会话，X 视频自动合并成 mp4 |
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
 | 发布前去重 | `scripts/publish_history.py` + `scripts/content_policy.py` | 原帖 ID 永久去重；同车型、同品牌同改装项目 30 天去重；同品牌每批最多一条 |
-| 发布队列 | `scripts/publication_queue.py` | 固定保存跨批次候选，按评分和与上一条的相似度选择下一条 |
+| 候选生产 | `scripts/candidate_pipeline.py` | 自动选题、增量检索、审核交接、递补、定稿并只入池 |
+| 候选池管理 | `scripts/candidate_pool.py` + `scripts/publication_queue.py` | 独立入池、带版本更新、撤回、失效与过期复核；不选择发布计划 |
 | 小红书发布 | `scripts/publish_pipeline.py`（复用现有计划与 Chrome 模块） | 固定复用 Chrome `Default`，只执行当前发布计划并登记，无人工确认环节 |
 | 效果复盘 | `scripts/note_metrics.py` | 24/72 小时记录六项真实数据，计算收藏率和每千次播放新增关注 |
 
@@ -80,14 +81,26 @@ python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth che
 
 **最少入选规则：`--top` 表示目标核验入选数，不是单次发布数，正式运行不得低于 3。** finder 会越过下载失败和超时候选自动递补；候选耗尽仍不足时以退出码 3 报告未完成。此时应增加 `--pages`、补充同义 `--query` 或扩大同栏目检索后继续，不得把不足 3 条的结果交给定稿或入队。`--dry-run` 只预演榜单，不视为完成核验名单；正式发布不受每日一条的数量限制。
 
-自动选题（无需人工输入主题）：
+自动选题并生产候选（默认只入池，不发布）：
 
 ```bash
-python3 .agents/skills/xcar-xhs/scripts/finder.py \
-  --auto-topic --sort likes --top 3 --out work/xfetch-run
+python3 .agents/skills/xcar-xhs/scripts/candidate_pipeline.py \
+  --out work/xcar-candidates-本次任务名
 ```
 
-`--auto-topic` 按发布历史执行 60% 稀有车型、25% 改装机械、15% 视觉实验（含山路驾驶场景）的 20 条轮动，同一系列连续规划 5 期，并自动生成带禁选排除词的检索式。它隐含 `--xiaohongshu`，不能与 `--prompt` 或 `--query` 同用。重复运行在实际发布登记前会保持同一计划，避免预演消耗期数。
+新任务使用新目录；同一目录再次运行即恢复。脚本输出 `awaiting_review`（退出码 3）时，Agent 读取 `review_request.json`、查看真实视频/抽帧并核实事实和授权，将逐条审核与文案保存为 `review.json`，随后继续：
+
+```bash
+python3 .agents/skills/xcar-xhs/scripts/candidate_pipeline.py \
+  --out work/xcar-candidates-本次任务名 \
+  --review-file work/xcar-candidates-本次任务名/review.json
+```
+
+**审核是 Agent 工作步骤，不是让用户再确认。** 不可把模板中的 pending 直接批量改成 approved；必须完成画面、前三秒、事实、授权和评分核验。有淘汰时脚本保留结果并递补，Agent 继续处理下一批审核请求，直到 `candidate_receipt.json` 为 `complete`。脚本本身不调用模型，不替代视觉判断或事实核查。输出为 `blocked`、`budget_exhausted` 或 `exhausted` 时按原因处理；不可把不足三条的批次标为完成。
+
+`needs_candidates` 表示定稿时去重出现新缺口，再运行同目录继续递补。默认累计搜索预算 12 页、下载尝试 15 次，每次执行时间预算 600 秒；用 `--max-pages`、`--max-downloads`、`--max-seconds` 调整。预算耗尽保留进度；`--query` 可补充当前系列检索式；`--retry-failed` 显式重试临时下载/抽帧错误；`--cancel` 取消任务并释放预约，保留文件。详见 [候选流水线与审核协议](references/candidate-pipeline.md)。
+
+选题器按最新已发布内容计算 60%/25%/15% 轮动参考，补链接与 unconfirmed 不推进期数；生产选题同时参考排队库存和在制作任务，优先补充覆盖不足的栏目/系列。候选保存独立 job_id 和系列，不绑定发布期数；真正生成发布计划时才按该系列的实际发布记录分配期数。旧 `finder.py --auto-topic` 保留为底层搜索/排障入口，不等于完成核验或入池。
 
 只查看下一期计划、不访问 X：
 
@@ -124,7 +137,7 @@ python3 .../finder.py \
 
 服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。**默认 `--min-likes 0 --min-reposts 0`，点赞和转发不占评分、不是主要放行依据，只作候选排序的弱参考。** 只有用户显式设置正数门槛才在下载前过滤并写入 `engagement_skipped`；`--min-reposts` 使用本地精确过滤。Agent 仍须按 100 分模型评分，只让核验后达到 70 分的素材进入最终入选。
 
-## 选项
+## finder 底层选项（正常候选生产使用上方统一入口）
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
@@ -234,9 +247,11 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
 - 把最终入选表、淘汰表写入 `<out>/REPORT.md`，并在 stdout 输出相同表格；重复运行会更新原表格，不会重复追加，也不会重复添加编号。
 - 旧 manifest 中的媒体路径失效时，可按唯一推文 ID 找回采用旧命名的现有文件；缺少、多余推文 ID、匹配不唯一或目标文件已存在时直接报错，避免静默覆盖和图文错配。
 
-## 自动发布与结果预览
+## 默认入池与显式发布
 
-完成下载、抽帧和定稿后，**不得再询问是否发布，也不得要求二次授权确认**。调用一次 `publish_pipeline.py` 完成入队、当前计划生成、Chrome 会话预检、上传填写、全文复核、发布登记和公开链接补查。默认发布一条，其余留在持久队列；`--max-items N` 指定本次最多逐条发布 N 条，不设每日数量上限。只有用户明确要求预演或保存草稿时才使用 `--action preview` 或 `--action draft`。
+正常候选任务由 `candidate_pipeline.py` 自动完成定稿和纯入池，读 `candidate_receipt.json` 汇报即可，**不得自动接着调用发布脚本**。手动流程已经定稿时可独立运行 `candidate_pool.py enqueue --out <out>`，不产生 planned 状态。它不受前一条发布结果待确认或缺公开链接影响。
+
+仅在用户明确要求发布时，调用 `publish_pipeline.py` 完成已有发布链路；沿用本次明确授权，无需重复确认。以下命令仅适用于明确的发布请求：
 
 普通实车内容不需要 `ai_disclosure`，发布正文不得再附加项目预设的“选题、素材初筛及文字由 AI 辅助整理”等通用 AI 辅助披露；定稿、计划生成和旧计划加载都会删除这句话。只有 AI 生成画面、概念动画等需要明确披露的内容才在 `ai_disclosure` 中填写专项说明（例如“AI 生成画面”或“概念车画面”），不能用翻译或拟人化措辞规避披露。`ai_disclosure` 不得包含“素材来自……”或“素材来源……”等素材来源文案；定稿和计划生成会删除披露字段中的来源句，正文或已有发布计划含来源文案会直接阻断。不再需要 `rights_confirmed` 字段。授权不清的内容在筛选阶段直接淘汰，不通过额外人工确认放行。
 
@@ -262,7 +277,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 
 公开链接补查只读取后台中精确标题唯一匹配的笔记卡片实际公开链接；缺失、多条匹配或链接已属于其他历史记录时停止，保留 `note_url_pending`，不猜测笔记 ID。后台结构变化时也可能需要手动 `attach-note`。再次运行统一入口会先补查历史缺失链接，然后才选择新内容。
 
-完成后的入选表“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题预览入选视频；同时标明哪一条已发布、哪些仍在队列。文件名和所在目录继续保留。预览是结果交付，不是发布前的等待环节。
+完成后的入选表“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题预览入选视频；默认标明“已入候选池，未发布”；明确执行过发布任务时再区分已发布与排队状态。文件名和所在目录继续保留。预览是结果交付，不是发布前的等待环节。
 
 ## 小红书选题、去重与自动发布
 
@@ -276,7 +291,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 
 ### 发布执行与排障入口
 
-定稿后统一调用上面的 `publish_pipeline.py`。旧 `xiaohongshu_publisher.py plan` 和 `chrome_xiaohongshu.py` 保留供排障使用，正常任务不要再由 Agent 分别串联。旧 Chrome 入口同样获取执行锁并检查提交日志，不能用 `--only` 绕过队列。
+只有明确的发布请求才调用上面的 `publish_pipeline.py`。默认候选生产在入池后结束。旧 `xiaohongshu_publisher.py plan` 和 `chrome_xiaohongshu.py` 保留供排障使用，正常任务不要再由 Agent 分别串联。旧 Chrome 入口同样获取执行锁并检查提交日志，不能用 `--only` 绕过队列。
 
 发布直接访问视频上传页 `https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video`。脚本复制 Chrome `Default` 的会话文件到临时隔离配置，在同一会话内预检并发布；原 Chrome 配置和标签页不修改，退出清理临时配置，不输出 Cookie 值。
 
@@ -317,19 +332,14 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 
 ## Agent 工作流（重要）
 
-1. 用户没有给主题时直接使用 `--auto-topic`，不要追问选题；用户给了主题才从 `--prompt` 提取车型/场景并补充同义检索式。自动模式读取 `topic_plan.json`，手动模式才使用提示词展开规则。
-2. X 登录态固定使用本机 Chrome `Default`，不要询问浏览器或 Profile，也不要默认改用内置浏览器。finder 自动执行 `xfetch auth check` 验证；只有登录校验失败时，才提示用户在 Chrome `Default` 登录 X，或显式选择 cookies.txt / auth-file 排障。
-3. 运行 finder（先 `--dry-run` 看榜单，由 Agent 检查内容是否对路再真下，无需让人工补选题）。固定发布历史必须启用，已发布候选在下载前跳过；此前手动发布的内容先补登记。默认互动门槛均为 0，点赞只作弱参考，不能为了凑数量降低选题、画面或版权标准；只有用户显式要求才设置点赞/转发出下载门槛。手动面向小红书必须加 `--xiaohongshu`，自动模式已隐含；禁选内容在下载前跳过，画面核验时再次剔除文字未命中的现场内容。
-4. 对下载的每条视频做三项核验，并记录每条的结果与淘汰原因：
-   - **选题**：按 100 分模型逐项评分，自动模式只最终入选达到 70 分、符合当前系列且不与近期车型重复的视频；互动量不得替代其他评分项。
-   - **时长**：默认素材上限 300 秒。finder 自动用 ffprobe 检查，超时视频直接进入 `<out>/rejected/`，不再抽帧；除非用户明确指定其他上限，不得放宽。自动计划的 15–45/20–60 秒是推荐成片时长，不是放宽素材上限的理由。
-   - **画面**：对 `frames/` 里的图用 `read_image` 抽查，剔除“标题像汽车但画面不是”的结果；不合格就换候选重下。每条必须写入 `verification.presentation`：纯车辆细节或山路驾驶画面为 `car_only`，真人出镜或人物分屏讲解为 `talking_head_explainer`，网页、销售页或屏幕配合讲解为 `screen_explainer`。后两类即使车辆清晰、原帖高赞或评分达到 70 分也必须淘汰。
-   - 因画面等原因被额外淘汰的视频不要删除，也移入 `<out>/rejected/` 备查，并同步更新 `manifest.json`。运行 `finalize.py` 时会根据画面标注和明显讲解文字自动完成讲解视频的移动与淘汰记录，不能只把分数调低后仍留在入选清单。
-   - **数量闭环**：每淘汰一条就检查合格入选数；不足 3 条时继续增加 `--pages`、补充同义 `--query`、扩大同栏目车型/场景检索并下载抽帧，直到至少 3 条全部通过核验。候选耗尽或接口受限只能报告阻塞，不能定稿、发布不足 3 条的名单或降低标准凑数。
-5. 确认最终入选至少 3 条后，为入选、淘汰记录撰写标题、正文、品牌、具体车型、改装项目、事实来源、讨论问题、五项评分和具体话题，写入 `publish.json`，运行 `finalize.py`。小红书标题必须为 1–20 字并包含 `title_detail`，正文必须原样包含 `verifiable_fact`。定稿器再执行同品牌每批一条、同车型/项目 30 天和队列去重。
-6. 定稿后调用一次 `publish_pipeline.py --out <out>`，默认发布一条，其余排队；需要本次继续逐条发布时用 `--max-items N`。无需 Agent 分别调用 plan、preflight、Chrome 和登记命令。脚本按评分、多样性和历史选择当前计划，任何异常或待确认立即停止，不要求二次授权确认。
-7. 检查 `publication_pipeline_receipt.json`：公开链接自动补查失败时按故障手册核验并 `attach-note`，不得重复发布；回执 `metrics` 给出 24/72 小时到期任务，按下方说明采集六项真实数据并复盘。
-8. 按下面「最终汇报格式」输出定稿器生成的**入选表 + 淘汰表两张表格**，再附 `REPORT.md`、`videos/`、`rejected/`、`frames/` 的路径；自动模式另附 `topic_plan.json`。明确标注本次已发布内容及其余排队状态，附队列、笔记 URL、历史与效果文件路径。提醒版权与平台条款。
+1. 自动选题并保存候选池时，使用 `candidate_pipeline.py --out <新任务目录>`；同目录再次调用即恢复，默认不发布。用户指定主题时仍可使用 finder 手动检索，最后必须补齐同等审核证据并通过纯入池门禁。
+2. X 登录态固定为 Chrome Default。登录失败按错误提示处理，不另选浏览器或打印凭据。
+3. 脚本按库存与任务预约选择栏目、系列，维护 cursor、已见 ID、下载和核验状态。已发布、排队、在制作或已明确淘汰的原帖在下载前排除；不足三条时按预算增量递补，不重新覆盖旧结果。
+4. 收到 `awaiting_review` 后，Agent 查看请求中的视频和抽帧：核验纯车辆/山路画面，排除人物和屏幕讲解；检查时长、系列匹配、前三秒表现、事实来源和授权依据。为五项评分逐项写理由，为批准候选写标题、正文、车型、讨论问题与 2–6 个话题。真实不合格写 rejected 和具体原因，不能为凑数量放行。
+5. 按 [审核协议](references/candidate-pipeline.md) 保存 `review.json`，用 `--review-file` 恢复。视频哈希不一致、审核证据缺失会阻断；评分不足、禁选、同品牌/车型/项目重复会淘汰递补。任务预算耗尽可提高预算或添加同系列检索式；接口受限时保存进度并报告，不伪称完成。
+6. 至少三条合格后，脚本自动定稿、可恢复重命名并写入候选池；正常完成只产生 queued。报告新增/跳过数量、审核及淘汰情况、`candidate_receipt.json`、队列与视频路径。默认不调用 `publish_pipeline.py`，不把已入池写成已发布。
+7. 只有明确发布请求才调用发布入口；公开链接、中断恢复及 24/72 小时效果流程沿用发布手册。既有候选缺新版审核证据时需复核，不得自动生成假的证明。
+8. 完成候选任务时按下方入选和淘汰表交付，注明“已入候选池，未发布”；缺口或阻塞时如实说明。队列维护使用 `candidate_pool.py audit/update/withdraw`，更新和撤回必须带当前 revision，不修改 planned、published 或 unconfirmed 条目。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
 

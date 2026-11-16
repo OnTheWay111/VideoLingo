@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SHARED_SCRIPTS = Path(__file__).resolve().parent.parent.parent / "web-content-fetcher/scripts"
@@ -215,6 +216,27 @@ def build_auto_queries(prompt, min_likes, since):
     return dedupe(result)
 
 
+def search_page(py, xfetch, query, args, env, raw_dir, cursor=None, page=1):
+    """单页搜索；失败抛错，不把错误当成检索耗尽。"""
+    import hashlib
+    cmd = [py, xfetch, 'search', query, '--type', args.type, '-n', str(args.limit),
+           '--format', 'jsonl', '--delay', str(args.delay)]
+    if cursor:
+        cmd += ['--cursor', cursor]
+    proc = run(cmd, env=env, timeout=min(300, getattr(args, 'operation_timeout', 300)))
+    if proc.returncode:
+        raise RuntimeError('X 搜索失败：' + redact_session_values((proc.stderr or '')[:300], env))
+    tweets = []
+    for line in (proc.stdout or '').splitlines():
+        if line.strip():
+            tweets.append(json.loads(line))
+    key = hashlib.sha256(query.encode()).hexdigest()[:16]
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / ('%s_page%d.jsonl' % (key, page))).write_text(proc.stdout or '')
+    match = re.search(r'next_cursor=(\S+)', proc.stderr or '')
+    return tweets, match.group(1) if match else None
+
+
 def search_query(py, xfetch, query, args, env, raw_dir):
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", query)[:60].strip("_") or "query"
     tweets, cursor, pages = [], None, max(1, args.pages)
@@ -388,7 +410,7 @@ def download_video(candidate, videos_dir, args):
     cmd = build_download_command(candidate, videos_dir, args)
     log("下载 %s" % candidate["url"])
     try:
-        proc = run(cmd, timeout=1800)
+        proc = run(cmd, timeout=min(1800, getattr(args, "operation_timeout", 1800)))
     except subprocess.TimeoutExpired:
         log("  下载超时")
         return None, "timeout"
@@ -409,23 +431,34 @@ def download_video(candidate, videos_dir, args):
     return {"file": path, "size_bytes": size, **info}, None
 
 
-def extract_frames(candidate, video_path, frames_dir, count):
+def extract_frames(candidate, video_path, frames_dir, count, timeout=120):
     if count <= 0:
         return []
     frames_dir.mkdir(parents=True, exist_ok=True)
     info = probe_video(video_path)
     duration = info["duration"] or 3.0
     frames = []
+    deadline = time.monotonic() + timeout
     for i in range(count):
-        frac = 0.15 if count == 1 else 0.15 + 0.6 * i / (count - 1)
-        t = min(max(0.5, duration * frac), max(0.5, duration - 0.4))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        first_count = min(3, max(1, count - 2))
+        if i < first_count:
+            t = min(0.5 + i, max(0, duration - 0.1))
+        else:
+            remaining = count - first_count
+            frac = 0.5 if remaining == 1 else 0.4 + 0.4 * (i - first_count) / (remaining - 1)
+            t = min(max(0, duration * frac), max(0, duration - 0.1))
         out = frames_dir / ("%s_%d.jpg" % (candidate["id"], i + 1))
+        if out.exists():
+            out.unlink()
         try:
-            run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", video_path,
-                 "-frames:v", "1", "-vf", "scale=640:-2", str(out), "-y"], timeout=120)
+            proc = run(["ffmpeg", "-v", "error", "-ss", "%.2f" % t, "-i", video_path,
+                 "-frames:v", "1", "-vf", "scale=640:-2", str(out), "-y"], timeout=remaining)
         except subprocess.TimeoutExpired:
             continue
-        if out.is_file() and out.stat().st_size > 0:
+        if proc.returncode == 0 and out.is_file() and out.stat().st_size > 0:
             frames.append({"file": str(out), "at_sec": round(t, 2)})
     return frames
 
@@ -496,7 +529,8 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "selection_target": target,
         "model_cooldown_days": 30,
         "brand_limit_per_batch": 1,
-        "selection_complete": len(downloads) >= target if target else None,
+        "download_complete": len(downloads) >= target if target else None,
+        "selection_complete": False,
         "download_thresholds": {
             "min_likes": getattr(args, "min_likes", 0),
             "min_reposts": getattr(args, "min_reposts", 0),
@@ -791,7 +825,8 @@ def main():
 
     stats["already_published_skipped"] = len(publish_skipped)
     stats["rejected_over_duration"] = len(rejected)
-    stats["selection_complete"] = len(downloads) >= target if target else None
+    stats["download_complete"] = len(downloads) >= target if target else None
+    stats["selection_complete"] = False
     write_outputs(args, args.prompt, queries, ranked, downloads, rejected, dropped, stats, out_dir,
                   publish_skipped, topic_skipped, topic_plan=topic_plan,
                   engagement_skipped=engagement_skipped)

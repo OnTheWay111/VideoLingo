@@ -74,7 +74,7 @@
 
 ## 六、统一发布入口与中断恢复
 
-正常定稿后只调用 `scripts/publish_pipeline.py --out <out>`。默认本次一条，`--max-items N` 是本次上限；同一会话逐条执行，缺链接或异常即停止。`publication_pipeline_receipt.json` 提供总结果、逐条结果和效果到期任务。
+只有用户明确要求发布时才调用 `scripts/publish_pipeline.py --out <out>`；默认选题任务由 candidate_pipeline.py 核验后只入池。默认本次一条，`--max-items N` 是本次上限；同一会话逐条执行，缺链接或异常即停止。`publication_pipeline_receipt.json` 提供总结果、逐条结果和效果到期任务。
 
 - 执行锁覆盖 Profile 和历史，已有进程执行时第二个进程立即返回阻塞。不要删除锁文件；文件锁随进程退出释放。
 - `<历史文件主名>.submission.json` 保存计划快照与状态，不含 Cookie。`submitting` 表示可能已发送提交，不能自动重发。先核验后台，已发布则登记 `published` 和真实链接；确认未发布才用 `publish_history.py resolve` 写入 `failed`。再运行统一入口恢复。

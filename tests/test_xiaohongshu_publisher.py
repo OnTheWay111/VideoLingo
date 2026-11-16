@@ -22,6 +22,9 @@ finder = importlib.util.module_from_spec(FINDER_SPEC)
 FINDER_SPEC.loader.exec_module(finder)
 
 
+from tests.candidate_fixtures import approve_item
+
+
 def candidate(tweet_id):
     return {
         "id": tweet_id,
@@ -63,6 +66,7 @@ def finalized_output(tmp_path, tweet_id="123", title="S660 的 660cc 在哪？")
         },
         "topics": ["#罕见车型", "#汽车文化"],
     }
+    approve_item(item)
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     return item
 
@@ -349,6 +353,8 @@ def test_publish_and_draft_do_not_require_disclosure(tmp_path, action):
 def test_publish_plan_removes_material_source_and_preset_ai_disclosure(
         tmp_path, disclosure, expected):
     item = finalized_output(tmp_path)
+    item["ai_disclosure"] = expected
+    approve_item(item)
     item["ai_disclosure"] = disclosure
     (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
@@ -413,6 +419,7 @@ def finalized_batch(tmp_path):
             "discussion_question": 11,
             "recent_diversity": 11 if score == 92 else 10,
         }
+        approve_item(item)
         items.append(item)
     (tmp_path / "manifest.json").write_text(json.dumps({
         "minimum_selected": 3, "selection_target": 3, "downloads": items,

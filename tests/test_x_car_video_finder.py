@@ -375,6 +375,12 @@ def test_finalize_accepts_three_selected_and_marks_selection_complete(tmp_path):
         "3": scored_publish(3, "Toyota", "Sera"),
     }, ensure_ascii=False))
 
+    from tests.candidate_fixtures import approve_item
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    finalizer.apply_publish_content(manifest['downloads'], finalizer.load_publish(publish_path))
+    for item in manifest['downloads']:
+        approve_item(item)
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     finalizer.finalize(tmp_path, publish_path)
 
     saved = json.loads((tmp_path / "manifest.json").read_text())
@@ -427,7 +433,7 @@ def test_auto_topic_plan_includes_mountain_driving_series():
 
     plan = topic_planner.build_topic_plan(records)
 
-    assert plan["strategy_version"] == 5
+    assert plan["strategy_version"] == 6
     assert plan["score_rubric"] == {
         "first_three_seconds": 25,
         "knowledge_point": 25,
@@ -455,8 +461,8 @@ def test_auto_topic_plan_is_stable_until_publication_is_recorded():
         "topic_series_episode": initial["series_episode"],
     }])
 
-    assert next_plan["schedule_slot"] == 2
-    assert next_plan["series_episode"] == 2
+    assert next_plan["schedule_slot"] == 1
+    assert next_plan["series_episode"] == 1
 
 
 def test_auto_topic_main_runs_without_prompt_and_saves_plan(tmp_path, monkeypatch):

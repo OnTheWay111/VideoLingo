@@ -8,7 +8,7 @@ from pathlib import Path
 from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 5
+STRATEGY_VERSION = 6
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -106,16 +106,39 @@ PILLARS = {
 
 
 def active_records(records):
-    return [record for record in records if record.get("status", "published") in ACTIVE_STATUSES]
+    # 历史是事件日志：补链接和状态更正不能重复消耗发布期数。
+    latest = {}
+    for record in records:
+        key = str(record.get("source_id") or record.get("title") or "")
+        if key:
+            latest[key] = record
+    return sorted((r for r in latest.values() if r.get("status", "published") == "published"),
+                  key=lambda r: r.get("published_at") or r.get("recorded_at") or "")
 
 
-def build_topic_plan(records):
+def build_topic_plan(records, queue_records=None, reservations=None):
     active = active_records(records)
     schedule_index = len(active) % len(PILLAR_SCHEDULE)
     pillar_id = PILLAR_SCHEDULE[schedule_index]
+    inventory = []
+    if queue_records is not None:
+        inventory = [entry.get("item", entry) for entry in queue_records
+                     if entry.get("status") in ("queued", "planned")]
+        for reservation in reservations or []:
+            if reservation.get("status") not in ("complete", "cancelled"):
+                inventory.extend([{"topic_pillar": reservation["plan"]["pillar"],
+                                   "topic_series_id": reservation["plan"]["series_id"]}]
+                                 * reservation.get("target", 3))
+        counts = {key: sum(item.get("topic_pillar") == key for item in inventory) for key in PILLARS}
+        scheduled = pillar_id
+        pillar_id = min(PILLARS, key=lambda key: (counts[key] / CONTENT_MIX[key], key != scheduled))
     pillar = PILLARS[pillar_id]
     pillar_records = [record for record in active if record.get("topic_pillar") == pillar_id]
     series_index = (len(pillar_records) // 5) % len(pillar["series"])
+    if queue_records is not None:
+        series_index = min(range(len(pillar["series"])), key=lambda index: (
+            sum(item.get("topic_series_id") == pillar["series"][index]["id"] for item in inventory),
+            index != series_index))
     series = pillar["series"][series_index]
     episode = len(pillar_records) % 5 + 1
     queries = ["%s filter:media %s" % (group, NEGATIVE_FILTERS) for group in series["query_groups"]]
@@ -128,6 +151,7 @@ def build_topic_plan(records):
     return {
         "strategy_version": STRATEGY_VERSION,
         "mode": "auto",
+        "inventory_aware": queue_records is not None,
         "pillar": pillar_id,
         "pillar_label": pillar["label"],
         "content_mix": CONTENT_MIX,

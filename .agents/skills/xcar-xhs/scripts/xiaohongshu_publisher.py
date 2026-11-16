@@ -8,6 +8,7 @@ import sys
 from urllib.parse import urlsplit
 from pathlib import Path
 from publication_runtime import atomic_json, execution_lock
+from candidate_review import validate_review
 
 from content_policy import (
     SCORE_THRESHOLD,
@@ -81,6 +82,7 @@ def validate_content(item):
     item.setdefault("verification", {})["score"] = score
     item["verification"]["score_breakdown"] = breakdown
     item["verification"]["score_threshold"] = SCORE_THRESHOLD
+    validate_review(item)
     return title, body, [topic.strip() for topic in topics], video.resolve(), details
 
 
@@ -130,7 +132,7 @@ def prepare_item(item, topic_plan):
         "topic_strategy_version": topic_plan.get("strategy_version") or "",
     }
     for key, value in values.items():
-        if value != "":
+        if value not in ("", None):
             item[key] = value
     return item
 
@@ -176,6 +178,11 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
             raise ValueError("publish 仅可生成当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
         item = entry["item"]
 
+    if action == 'publish' and item.get('topic_series_id') and not item.get('topic_series_episode'):
+        series_records = [record for record in latest_records(history.records())
+                          if record.get('status') == 'published'
+                          and record.get('topic_series_id') == item['topic_series_id']]
+        item['topic_series_episode'] = len(series_records) + 1
     candidate = item["candidate"]
     title, body, topics, video, details = validate_content(item)
     match = history.check(candidate.get("id"), title)

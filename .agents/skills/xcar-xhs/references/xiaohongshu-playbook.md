@@ -20,7 +20,7 @@
 | 25% | 改装与机械反差 | 发动机移植、宽体、排气、马力机、定制工艺 | 20–60 秒 |
 | 15% | 视觉实验选题 | 极小汽车、奇特结构、罕见原型车、山路驾驶 | 15–45 秒 |
 
-无需人工输入主题时运行 `finder.py --auto-topic`。计划器按固定 20 条顺序轮动，同一栏目内每 5 期切换一个系列。计划器只负责栏目、系列、期数和检索式，不自动放行素材；发布队列仍会避免相邻笔记出现同系列内容。
+无需人工输入主题时运行 `candidate_pipeline.py --out <新任务目录>`，默认核验后只入池。发布轮动按每个原帖最新已发布状态计数，补链接和待确认记录不推进期数；生产选题按现有库存和在制作预约补充栏目/系列。候选任务只保存 job_id 和系列，实际发布时才分配期数。计划器不自动放行素材。
 
 ## 二、三条核验与逐条发布解耦
 
@@ -29,7 +29,7 @@
 3 条是候选池数量，不是每日发布数量上限：
 
 - `finalize.py` 按总分降序整理本批入选。
-- `publish_pipeline.py` 内部调用计划模块，把本批全部入选加入 `state/publish_queue.json`，生成下一条发布计划。
+- `candidate_pipeline.py` 在 Agent 审核完成后定稿并纯入池；手动定稿可调用 `candidate_pool.py enqueue`，不生成发布计划。
 - 当前最高分候选若与上一条同品牌、同改装项目或同系列，则保留在队列，改选下一条不相似内容。
 - 当前发布登记完成并补齐公开笔记地址后，统一入口可继续生成下一条计划（`--max-items N`），旧队列与新批次一起参与评分选择，不设每日一条限制。
 - 每次只执行当前计划，不扫描 `plans/` 批量发布，也不使用两条之间 1–10 分钟的随机等待。
@@ -111,7 +111,7 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
   --out work/xfetch-run --publish-file work/xfetch-run/publish.json
 ```
 
-定稿后一次调用完成入队、预检、发布和公开链接补查：
+正常选题任务核验后仅保存候选池，见 [候选流水线与审核协议](candidate-pipeline.md)。只有用户明确要求发布时，才运行下面的发布入口：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
@@ -120,7 +120,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 
 输出 `work/xfetch-run/xiaohongshu_publish_plan.json` 和 `work/xfetch-run/plans/<原帖ID>.json`。Chrome 只读取当前发布计划，不扫描目录里的其他计划。标题超长、事实未写入正文、来源缺失、评分不完整、话题数量不符或视频缺失都会直接阻断。
 
-只有用户明确要求时才使用 `--action preview` 或 `--action draft`，此时必须传 `--tweet-id`。正式发布默认 `action=publish`，不需要二次确认。普通实车内容不填写 `ai_disclosure`，也不再拼接“选题、素材初筛及文字由 AI 辅助整理”等通用 AI 辅助披露；AI 生成画面、概念动画等内容仍须单独填写专项披露。`ai_disclosure` 不得包含“素材来自……”或“素材来源……”等素材来源文案；来源句会从披露字段中删除，正文或已有计划含来源文案时禁止发布。
+只有用户明确要求时才使用 `--action preview` 或 `--action draft`，此时必须传 `--tweet-id`。用户明确要求发布后，发布入口默认 `action=publish`，不需要二次确认；普通选题入池任务不得自动调用它。普通实车内容不填写 `ai_disclosure`，也不再拼接“选题、素材初筛及文字由 AI 辅助整理”等通用 AI 辅助披露；AI 生成画面、概念动画等内容仍须单独填写专项披露。`ai_disclosure` 不得包含“素材来自……”或“素材来源……”等素材来源文案；来源句会从披露字段中删除，正文或已有计划含来源文案时禁止发布。
 
 ## 六、Chrome Default 自动执行
 

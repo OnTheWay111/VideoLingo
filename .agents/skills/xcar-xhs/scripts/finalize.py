@@ -2,6 +2,7 @@
 """用最终标题、推荐正文和话题重命名视频、抽帧，并生成发布表格。"""
 
 import argparse
+import hashlib
 import datetime
 import json
 import re
@@ -18,7 +19,9 @@ from content_policy import (
     validate_verifiable_content,
 )
 from publication_queue import PublicationQueue, WAITING_STATUSES
-from publish_history import ACTIVE_STATUSES, PublishedHistory
+from publish_history import ACTIVE_STATUSES, PublishedHistory, locked_history
+from publication_runtime import atomic_json
+from candidate_review import validate_review, file_digest
 from topic_policy import explainer_video_match
 
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
@@ -240,7 +243,7 @@ def reject_duplicate_downloads(manifest, history_records, queue_records):
     manifest.setdefault("stats", {})["content_duplicate_rejected"] = len(rejected)
 
 
-def finalize(out_dir, publish_file):
+def _finalize(out_dir, publish_file):
     out_dir = Path(out_dir).resolve()
     manifest_path = out_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -258,12 +261,16 @@ def finalize(out_dir, publish_file):
     if minimum_selected is not None:
         required_selected = max(minimum_selected, manifest.get("selection_target") or 0)
         if len(manifest.get("downloads", [])) < required_selected:
+            manifest['selection_complete'] = False
+            manifest.pop('finalized_at', None)
+            atomic_json(manifest_path, manifest)
             raise ValueError(
                 "核验入选名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
                 % (required_selected, len(manifest.get("downloads", []))))
         for item in manifest.get("downloads", []):
             score, breakdown = validate_score(item)
             validate_verifiable_content(item)
+            validate_review(item)
             item["score"] = score
             item["score_breakdown"] = breakdown
             item.setdefault("verification", {})["score"] = score
@@ -276,6 +283,9 @@ def finalize(out_dir, publish_file):
     if minimum_selected is not None:
         required_selected = max(minimum_selected, manifest.get("selection_target") or 0)
         if len(manifest.get("downloads", [])) < required_selected:
+            manifest['selection_complete'] = False
+            manifest.pop('finalized_at', None)
+            atomic_json(manifest_path, manifest)
             raise ValueError(
                 "核验入选名单至少要有 %d 条，当前只有 %d 条；请继续扩大检索并递补合格视频后再定稿"
                 % (required_selected, len(manifest.get("downloads", []))))
@@ -318,13 +328,61 @@ def finalize(out_dir, publish_file):
     for group_name in ("downloads", "rejected"):
         if manifest.get(group_name):
             (out_dir / ("videos" if group_name == "downloads" else "rejected")).mkdir(exist_ok=True)
-    for source, target in operations:
-        source.rename(target)
     manifest["finalized_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-    tables = render_publish_tables(manifest.get("downloads", []), manifest.get("rejected", []))
-    update_report(out_dir / "REPORT.md", tables)
+    transaction = {'status': 'pending', 'manifest': manifest, 'operations': []}
+    for index, (source, target) in enumerate(operations):
+        transaction['operations'].append({'source': str(source), 'target': str(target),
+            'temporary': str(out_dir / ('.finalize-%d.tmp' % index)), 'sha256': file_digest(source)})
+    atomic_json(out_dir / 'finalize_transaction.json', transaction)
+    return recover_finalization(out_dir)
+
+
+def recover_finalization(out_dir):
+    out_dir = Path(out_dir)
+    path = out_dir / 'finalize_transaction.json'
+    if not path.exists():
+        return None
+    transaction = json.loads(path.read_text())
+    if transaction['status'] == 'complete':
+        return None
+    # 先暂存全部文件，再完成目标命名；每步可依据哈希恢复。
+    for operation in transaction['operations']:
+        source, temporary, target = (Path(operation[key]) for key in ('source', 'temporary', 'target'))
+        if temporary.exists():
+            candidate = temporary
+        elif source.exists():
+            candidate = source
+        elif target.exists():
+            candidate = target
+        else:
+            raise ValueError('定稿恢复缺少媒体：' + str(source))
+        if file_digest(candidate) != operation['sha256']:
+            raise ValueError('定稿恢复媒体内容已变化：' + str(candidate))
+        if candidate == source:
+            source.rename(temporary)
+    for operation in transaction['operations']:
+        temporary, target = Path(operation['temporary']), Path(operation['target'])
+        if temporary.exists():
+            if target.exists():
+                raise ValueError('定稿恢复目标已存在：' + str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.rename(target)
+    manifest = transaction['manifest']
+    atomic_json(out_dir / 'manifest.json', manifest)
+    tables = render_publish_tables(manifest.get('downloads', []), manifest.get('rejected', []))
+    update_report(out_dir / 'REPORT.md', tables)
+    transaction['status'] = 'complete'
+    atomic_json(path, transaction)
     return tables
+
+
+def finalize(out_dir, publish_file):
+    out_dir = Path(out_dir).resolve()
+    with locked_history(out_dir / '.finalize.lock', create=True):
+        recovered = recover_finalization(out_dir)
+        if recovered is not None:
+            return recovered
+        return _finalize(out_dir, publish_file)
 
 
 def main():
