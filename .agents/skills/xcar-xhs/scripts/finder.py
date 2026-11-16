@@ -40,8 +40,11 @@ CAR_LEXICON = (
     r"(?i)(?:\b(?:cars?|auto|vehicle|suv|crossover|truck|pickup|supercar|hypercar|"
     r"sportscar|musclecars?|cybertruck|tesla|porsche|ferrari|lamborghini|mclaren|"
     r"bugatti|bmw|mercedes|amg|audi|rivian|ford|mustang|corvette|gtr|supra|jdm|"
+    r"honda|suzuki|daihatsu|toyota|nissan|mitsubishi|volvo|jeep|lexus|xpeng|"
+    r"n[ -]?van|n[ -]?box|jimny|stagea|legnum|delorean|"
     r"rally|offroad|off-road|drift|drag\s?race|car\s?meet|car\s?show|car\s?spotting|"
     r"test\s?drive|first\s?drive|car\s?review|exhaust|horsepower|engine|motorsport|f1)\b"
+    r"|エブリイ|アトレー|ルーミー|ホンダ|スズキ|ダイハツ|トヨタ"
     r"|汽车|越野|超跑|跑车|改装车|车展|车评|试驾|赛车|赛道|皮卡|漂移|引擎|马力)"
 )
 

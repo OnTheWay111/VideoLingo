@@ -608,3 +608,17 @@ def test_batch_deduplicates_brand_and_keeps_highest_scored_item():
     assert manifest["rejected"][0]["candidate"]["id"] == "1"
     assert "同品牌每批最多一条" in manifest["rejected"][0]["reason"]
     assert manifest["stats"]["content_duplicate_rejected"] == 1
+
+
+def test_new_series_vehicle_names_survive_car_filter_without_generic_car_word():
+    import re
+    car_re = re.compile(finder.CAR_LEXICON)
+    for text in ['Honda Fit Magic Seats', 'N-VAN シートがフラット',
+                 'エブリイ車中泊仕様から仕事仕様へ', 'ルーミーの車中泊',
+                 'アトレー シート', 'Suzuki Jimny articulation',
+                 'Volvo 850R', 'Stagea 260RS', 'Legnum VR4', 'DeLorean DMC-12']:
+        tweet = {'id': '1', 'text': text, 'media': [{'type': 'video', 'url': 'https://example.com/v'}]}
+        assert finder.normalize(tweet, car_re, [], True) is not None, text
+    unrelated = {'id': '2', 'text': 'Folding seats in a home theatre',
+                 'media': [{'type': 'video', 'url': 'https://example.com/v'}]}
+    assert finder.normalize(unrelated, car_re, [], True) is None
