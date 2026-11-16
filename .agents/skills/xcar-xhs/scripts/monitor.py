@@ -345,7 +345,8 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as exc:
                 self.send_json({"error": str(exc)}, 400)
             return
-        target = "index.html" if parsed.path in ("", "/") else parsed.path.lstrip("/")
+        page_routes = ("", "/", "/overview", "/candidate-pool")
+        target = "index.html" if parsed.path in page_routes else parsed.path.lstrip("/")
         path = (self.static_dir / target).resolve()
         if self.static_dir not in path.parents and path != self.static_dir:
             self.send_error(403)

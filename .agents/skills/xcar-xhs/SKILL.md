@@ -340,7 +340,7 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 python3 .agents/skills/xcar-xhs/scripts/monitor.py
 ```
 
-打开 `http://127.0.0.1:8769`。页面按 `Asia/Shanghai` 自然日统计首次入池和确认发布，展示未结束候选/发布任务的全流程、当前阶段、审核缺口、搜索页数、下载尝试和阻塞原因。旧任务没有业务事件时，对应环节显示“未采集”，不通过文件数量反推。
+打开 `http://127.0.0.1:8769/overview` 查看运营总览，通过左侧导航或 `http://127.0.0.1:8769/candidate-pool` 进入独立候选池页面。运营总览按 `Asia/Shanghai` 自然日统计首次入池和确认发布，展示未结束候选/发布任务的全流程、当前阶段、审核缺口、搜索页数、下载尝试和阻塞原因。旧任务没有业务事件时，对应环节显示“未采集”，不通过文件数量反推。
 
 候选与发布脚本会把后续业务阶段写入 `state/monitor_events.jsonl`。模型调用发生在脚本外部的 Agent 或执行宿主中；拿到真实 provider usage 后，由执行端逐次写入 `state/token_usage.jsonl`，`request_id` 必须使用模型响应的唯一 ID：
 
