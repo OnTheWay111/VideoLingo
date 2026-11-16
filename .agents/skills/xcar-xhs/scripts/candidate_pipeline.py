@@ -19,6 +19,7 @@ from finalize import apply_publish_content, finalize, load_publish, recover_fina
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
+from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS
 from topic_policy import forbidden_topic_match
 from xiaohongshu_publisher import latest_records, validate_content
@@ -116,6 +117,10 @@ def apply_reviews(state, path, out, registry):
                 raise ValueError('淘汰必须填写原因')
             entry.update(status='rejected', reason=result['reason'])
             registry['rejected'][source_id] = {'reason': result['reason'], 'at': now()}
+            record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
+                         status='rejected', event_id='%s:%s:review' % (state['job_id'], source_id),
+                         details={'reason': result['reason']},
+                         path=Path(state['history_file']).with_name('monitor_events.jsonl'))
             continue
         if result.get('decision') != 'approved':
             raise ValueError('审核 decision 必须为 approved、rejected 或 pending')
@@ -132,11 +137,19 @@ def apply_reviews(state, path, out, registry):
             reason = '禁选内容：' + forbidden if forbidden else '核验评分低于 70'
             entry.update(status='rejected', reason=reason, item=approved, publish=content[source_id])
             registry['rejected'][source_id] = {'reason': reason, 'at': now()}
+            record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
+                         status='rejected', event_id='%s:%s:review' % (state['job_id'], source_id),
+                         details={'reason': reason},
+                         path=Path(state['history_file']).with_name('monitor_events.jsonl'))
             continue
         validate_content(approved)
         approved.update(topic_pillar=state['plan']['pillar'], topic_series_id=state['plan']['series_id'],
                         topic_strategy_version=state['plan']['strategy_version'], candidate_job_id=state['job_id'])
         entry.update(status='approved', item=approved, publish=content[source_id])
+        record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
+                     status='approved', event_id='%s:%s:review' % (state['job_id'], source_id),
+                     details={'score': approved.get('score')},
+                     path=Path(state['history_file']).with_name('monitor_events.jsonl'))
 
 
 def reconcile_approved(state, history, queue):
@@ -215,6 +228,10 @@ def run_pipeline(args, backend=None):
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
                      'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False}
                                                for q in make_queries(plan)], 'created_at': now()}
+            record_event('candidate', 'topic_strategy', state['job_id'],
+                         event_id=state['job_id'] + ':topic_strategy',
+                         details={'series_id': plan.get('series_id'), 'pillar': plan.get('pillar')},
+                         path=history.path.with_name('monitor_events.jsonl'))
         elif state['history_file'] != str(history.path):
             raise ValueError('恢复任务不能切换发布历史')
         for key, value in state.get('settings', {}).items():
@@ -270,6 +287,10 @@ def run_pipeline(args, backend=None):
                     for item in manifest['downloads']:
                         state['items'][str(item['candidate']['id'])]['item'] = item
                     state['enqueue'] = enqueue_finalized(out, history, queue)
+                    for source_id in (state['enqueue'].get('source_ids') or []):
+                        record_event('candidate', 'copy_finalize_enqueue', state['job_id'], source_id,
+                                     event_id='%s:%s:enqueue' % (state['job_id'], source_id),
+                                     path=history.path.with_name('monitor_events.jsonl'))
                     return finish('complete')
             for entry in state['items'].values():
                 if entry['status'] == 'downloading':
@@ -363,6 +384,10 @@ def run_pipeline(args, backend=None):
                             entry['status'] = 'awaiting_review'
                             entry['video_sha256'] = file_digest(item['video']['file'])
                             pending += 1
+                            record_event('candidate', 'download_frames', state['job_id'], source_id,
+                                         event_id='%s:%s:download_frames' % (state['job_id'], source_id),
+                                         details={'frame_count': len(item['frames'])},
+                                         path=history.path.with_name('monitor_events.jsonl'))
                         except Exception as exc:
                             entry.update(status='frame_failed', reason=str(exc), retryable=True)
                         checkpoint()
@@ -383,6 +408,10 @@ def run_pipeline(args, backend=None):
                 if args.since and 'since:' not in search_text:
                     search_text += ' since:' + args.since
                 tweets, cursor = backend.search(search_text, query['cursor'], query['pages'] + 1, out)
+                record_event('candidate', 'search_filter', state['job_id'],
+                             event_id='%s:search:%d' % (state['job_id'], state['pages']),
+                             details={'result_count': len(tweets), 'query_page': query['pages'] + 1},
+                             path=history.path.with_name('monitor_events.jsonl'))
                 previous = query['cursor']
                 query.update(cursor=cursor, pages=query['pages'] + 1,
                              done=not tweets or not cursor or cursor == previous)
@@ -410,6 +439,10 @@ def run_pipeline(args, backend=None):
             write_manifest(state, out, history)
             finalize(out, out / 'publish.json')
             state['enqueue'] = enqueue_finalized(out, history, queue)
+            for source_id in (state['enqueue'].get('source_ids') or []):
+                record_event('candidate', 'copy_finalize_enqueue', state['job_id'], source_id,
+                             event_id='%s:%s:enqueue' % (state['job_id'], source_id),
+                             path=history.path.with_name('monitor_events.jsonl'))
             return finish('complete')
         except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
             if state.get('phase') == 'finalizing' and isinstance(exc, ValueError) and '至少要有' in str(exc):

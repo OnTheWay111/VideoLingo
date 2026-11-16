@@ -9,6 +9,7 @@ from chrome_xiaohongshu import ChromeSession, recover_note_urls, recover_submiss
 from note_metrics import NoteMetrics
 from publication_runtime import atomic_json, execution_lock
 from publish_history import PublishedHistory, default_history_path
+from monitor_telemetry import record_event
 from xiaohongshu_publisher import build_plan, ensure_publish_available, save_plan, latest_records
 
 
@@ -48,9 +49,22 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                     if plan['status'] != 'ready':
                         summary.update(status='skipped', plan=plan)
                         break
+                    source_id = str(plan.get('source_id') or '')
+                    job_id = str(plan.get('candidate_job_id') or '')
+                    record_event('publish', 'plan_preflight', job_id, source_id,
+                                 event_id='publish:%s:plan_preflight' % source_id,
+                                 path=history.path.with_name('monitor_events.jsonl'))
                     result = run_locked(out_dir, history, profile, headless,
                                         timeout=timeout, session=chrome)
                     results.extend(result['results'])
+                    record_event('publish', 'upload_submit', job_id, source_id,
+                                 status=result.get('status', 'unknown'),
+                                 event_id='publish:%s:upload_submit' % source_id,
+                                 path=history.path.with_name('monitor_events.jsonl'))
+                    record_event('publish', 'result_verify', job_id, source_id,
+                                 status=result.get('status', 'unknown'),
+                                 event_id='publish:%s:result_verify' % source_id,
+                                 path=history.path.with_name('monitor_events.jsonl'))
                     summary['published'] += result['published']
                     if result['status'] != 'complete':
                         summary['status'] = 'incomplete'
@@ -58,6 +72,10 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                     pending = [r for r in result['results'] if r.get('note_url_pending')]
                     if pending:
                         summary.setdefault('pending_links', []).extend(pending)
+                    record_event('publish', 'link_recovery', job_id, source_id,
+                                 status='pending' if pending else 'complete',
+                                 event_id='publish:%s:link_recovery' % source_id,
+                                 path=history.path.with_name('monitor_events.jsonl'))
                     # 历史已跳过的计划不能在同次运行中反复执行。
                     if not result['published'] and action == 'publish':
                         summary['status'] = 'skipped'

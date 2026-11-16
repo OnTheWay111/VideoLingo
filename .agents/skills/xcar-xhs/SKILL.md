@@ -332,6 +332,28 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 
 数据固定追加到 `state/note_metrics.jsonl`，72 小时使用 `--checkpoint 72` 再记一次，不覆盖 24 小时快照。脚本自动计算 **收藏率 = 收藏 ÷ 播放** 和 **每千次播放新增关注 = 新增关注 ÷ 播放 × 1000**；播放为 0 时比率保存为 `null`。复盘优先看这两个指标，而不是只追求点赞。
 
+## 本地运营监控与 Token 用量
+
+监控页只读候选池、发布历史、候选任务和业务事件；不会触发搜索、审核、入池或发布：
+
+```bash
+python3 .agents/skills/xcar-xhs/scripts/monitor.py
+```
+
+打开 `http://127.0.0.1:8769`。页面按 `Asia/Shanghai` 自然日统计首次入池和确认发布，展示未结束候选/发布任务的全流程、当前阶段、审核缺口、搜索页数、下载尝试和阻塞原因。旧任务没有业务事件时，对应环节显示“未采集”，不通过文件数量反推。
+
+候选与发布脚本会把后续业务阶段写入 `state/monitor_events.jsonl`。模型调用发生在脚本外部的 Agent 或执行宿主中；拿到真实 provider usage 后，由执行端逐次写入 `state/token_usage.jsonl`，`request_id` 必须使用模型响应的唯一 ID：
+
+```bash
+python3 .agents/skills/xcar-xhs/scripts/monitor_telemetry.py record \
+  --request-id 响应唯一ID --flow candidate --stage visual_fact_review \
+  --job-id 候选任务ID --provider openai --model 实际模型ID \
+  --input-tokens 1000 --cached-input-tokens 600 \
+  --output-tokens 200 --reasoning-tokens 80 --total-tokens 1200
+```
+
+候选阶段为 `topic_strategy`、`search_filter`、`download_frames`、`visual_fact_review`、`copy_finalize_enqueue`；发布阶段为 `plan_preflight`、`upload_submit`、`result_verify`、`link_recovery`。也可向本地服务 `POST /api/usage` 提交同名 JSON 字段。只记录真实 usage；暂时拿不到的阶段保持“未采集”。`total_tokens` 是汇总口径，缓存输入和推理 Token 作为子集展示，不再重复相加；失败调用只要 provider 返回了 usage 也应记录。
+
 ## 候选任务完成条件（防止审核交接遗漏）
 
 `awaiting_review` 是交给当前 Agent 的内部步骤，不是等待用户，也不是可交付的终态。收到后必须在本轮继续读审核请求、查看画面、填写真实证据并恢复同一任务；不得仅汇报“剩余待核验”就结束。退出码 3 须结合回执状态判断，不能当作统一失败。
