@@ -26,12 +26,15 @@ def content_digest(item):
     return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def validate_review(item, check_digest=True):
+def validate_review(item, check_digest=True, require_rights=True):
     review = item.get('verification') or {}
     if review.get('status') != 'approved' or review.get('presentation') != 'car_only':
         raise ValueError('入池必须有 approved / car_only 视觉核验结论')
-    for field in ('reviewer', 'reviewed_at', 'visual_evidence', 'first_three_seconds_evidence',
-                  'fact_evidence', 'rights_evidence', 'series_evidence'):
+    fields = ('reviewer', 'reviewed_at', 'visual_evidence', 'first_three_seconds_evidence',
+              'fact_evidence', 'series_evidence')
+    if require_rights:
+        fields += ('rights_evidence',)
+    for field in fields:
         if not isinstance(review.get(field), str) or not review[field].strip():
             raise ValueError('核验缺少依据：' + field)
     try:
@@ -43,7 +46,7 @@ def validate_review(item, check_digest=True):
     if reviewed > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5):
         raise ValueError('reviewed_at 不能是未来时间')
     source = urlsplit(str(review.get('rights_source') or ''))
-    if source.scheme not in ('http', 'https') or not source.netloc:
+    if require_rights and (source.scheme not in ('http', 'https') or not source.netloc):
         raise ValueError('rights_source 必须记录实际授权依据链接')
     reasons = review.get('score_reasons')
     if not isinstance(reasons, dict) or set(reasons) != set(SCORE_RUBRIC) or not all(
@@ -62,3 +65,21 @@ def validate_review(item, check_digest=True):
         if review.get('content_sha256') != content_digest(item):
             raise ValueError('文案已变化，必须重新核验')
     return review
+
+
+def validate_publication_review(item):
+    """已有候选兼容旧核验格式；发布阶段不重新要求转载授权字段。"""
+    review = item.get('verification') or {}
+    if review.get('status') in ('verified', 'passed'):
+        if review.get('presentation') != 'car_only':
+            raise ValueError('既有候选必须有 car_only 核验结论')
+        frames = item.get('frames') or []
+        if not frames or not all(Path(frame.get('file') or '/nonexistent').is_file() for frame in frames):
+            raise ValueError('既有候选抽帧缺失，需重新核验')
+        # 旧记录没有哈希时不伪造证明；已有哈希仍必须匹配。
+        if review.get('video_sha256') and review['video_sha256'] != file_digest(item['video']['file']):
+            raise ValueError('视频已变化，必须重新核验')
+        if review.get('content_sha256') and review['content_sha256'] != content_digest(item):
+            raise ValueError('文案已变化，必须重新核验')
+        return review
+    return validate_review(item, require_rights=False)

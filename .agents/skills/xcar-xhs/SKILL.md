@@ -271,11 +271,13 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 
 发布入口默认无头 Chrome `Default`，`--headed` 显示隔离浏览器，`--timeout` 默认 180 秒。计划仍写入 `xiaohongshu_publish_plan.json` 和 `plans/<原帖ID>.json`，全量队列仍为 `state/publish_queue.json`。发布和草稿分别登记到 `published_videos.jsonl`、`draft_videos.jsonl`。
 
-统一回执为 `<out>/publication_pipeline_receipt.json`：`complete` 表示本次正常完成，`note_url_pending` 表示发布成功但链接补查未完成，`incomplete` 表示执行失败或结果未确认，`blocked` 包含具体阻塞原因。非成功状态返回非零退出码，禁止盲目循环重试。回执同时列出 24/72 小时已到期效果任务，不编造或自动填零指标。
+统一回执为 `<out>/publication_pipeline_receipt.json`：`complete` 表示本次正常完成，单条结果的 `note_url_pending=true` 与汇总 `pending_links` 表示提交已确认但链接待补查，不改变 `complete` 状态，`incomplete` 表示执行失败或结果未确认，`blocked` 包含具体阻塞原因。非成功状态返回非零退出码，禁止盲目循环重试。回执同时列出 24/72 小时已到期效果任务，不编造或自动填零指标。
 
-进程锁同时保护 Chrome Profile 和共享历史。提交日志位于历史文件旁的 `<历史文件主名>.submission.json`，在发送发布点击前原子写入 `submitting`，出现明确成功证据后写入 `confirmed`，历史和队列登记完成后写入 `recorded`。重启可补齐已确认的登记；`submitting` 不会自动重发，必须核验后台后按故障手册处理。不要删除日志来绕过阻断。
+进程锁同时保护 Chrome Profile 和共享历史。提交日志位于历史文件旁的 `<历史文件主名>.submission.json`，在发送发布点击前原子写入 `submitting`，出现明确成功证据后写入 `confirmed`，历史和队列登记完成后写入 `recorded`。重启可补齐已确认的登记；未确认的 `submitting` 按原帖 ID 登记为 `unconfirmed`，完整快照保存在 `<历史文件主名>.submission.unconfirmed/`，共享日志完成登记后可服务其他视频。同一视频禁止重发，其他视频不受影响；只有核验后台后才可更正该条状态。不要删除日志或伪造历史来绕过防重发。
 
-公开链接补查只读取后台中精确标题唯一匹配的笔记卡片实际公开链接；缺失、多条匹配或链接已属于其他历史记录时停止，保留 `note_url_pending`，不猜测笔记 ID。后台结构变化时也可能需要手动 `attach-note`。再次运行统一入口会先补查历史缺失链接，然后才选择新内容。
+公开链接补查只接受后台精确标题唯一匹配卡片提供或实际打开的公开链接；缺失、多条匹配或链接已属于其他历史记录时仅保留该条 `note_url_pending`，不猜测笔记 ID，也不阻断其他视频。统一入口不再先扫描旧历史补链接，只为本次成功提交的视频尝试补查；旧记录可独立用 `attach-note` 补登记。
+
+`published` 表示平台明确确认提交成功，不等于审核通过或持续公开；新记录用 `submission_status` 与 `public_link_status` 分别记录提交确认和链接状态。缺链接不能自动推断为未发布或审核失败。审核未通过、删除、改名和链接未找到必须保留各自实际证据，不伪造链接，不把旧的未知可见性状态变成全局发布门禁。
 
 完成后的入选表“标题名”必须输出为 `[标题](<视频绝对路径>)`，让用户直接点击标题预览入选视频；默认标明“已入候选池，未发布”；明确执行过发布任务时再区分已发布与排队状态。文件名和所在目录继续保留。预览是结果交付，不是发布前的等待环节。
 
@@ -308,7 +310,7 @@ python3 .agents/skills/xcar-xhs/scripts/chrome_xiaohongshu.py \
 
 ### 公开笔记地址与 24/72 小时效果
 
-若发布成功页没有给出公开笔记地址，回执会标记 `note_url_pending=true`，后续发布前必须先从公开分享页或创作者后台取得真实地址并补登记，不能用结果页代替：
+若发布成功页没有给出公开笔记地址，回执会标记 `note_url_pending=true`，可独立从公开分享页或创作者后台取得真实地址并补登记；不阻断其他视频，也不能用结果页代替：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/xiaohongshu_publisher.py \
@@ -349,7 +351,7 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 4. 收到 `awaiting_review` 后，Agent 查看请求中的视频和抽帧：核验纯车辆/山路画面，排除人物和屏幕讲解；检查时长、系列匹配、前三秒表现、事实来源和授权依据。为五项评分逐项写理由，为批准候选写标题、正文、车型、讨论问题与 2–6 个话题。真实不合格写 rejected 和具体原因，不能为凑数量放行。
 5. 按 [审核协议](references/candidate-pipeline.md) 保存 `review.json`，用 `--review-file` 恢复。视频哈希不一致、审核证据缺失会阻断；评分不足、禁选、同品牌/车型/项目重复会淘汰递补。任务预算耗尽可提高预算或添加同系列检索式；接口受限时保存进度并报告，不伪称完成。
 6. 至少三条合格后，脚本自动定稿、可恢复重命名并写入候选池；正常完成只产生 queued。报告新增/跳过数量、审核及淘汰情况、`candidate_receipt.json`、队列与视频路径。默认不调用 `publish_pipeline.py`，不把已入池写成已发布。
-7. 只有明确发布请求才调用发布入口；公开链接、中断恢复及 24/72 小时效果流程沿用发布手册。既有候选缺新版画面、事实或评分审核证据时需复核，不得自动生成假的证明；不得把此复核扩展为发布前的转载授权依据校验。
+7. 只有明确发布请求才调用发布入口；公开链接、中断恢复及 24/72 小时效果流程沿用发布手册。已入池的旧版 `verified` / `passed` 候选沿用真实 `car_only` 结论及现存抽帧，发布前仍校验文案、评分、文件和已有哈希；不因缺新版审核字段重新入池，也不伪造 approved 或哈希。新版候选继续校验画面、事实与评分证据；不得把发布复核扩展为转载授权依据校验。
 8. 完成候选任务时按下方入选和淘汰表交付，注明“已入候选池，未发布”；缺口或阻塞时如实说明。队列维护使用 `candidate_pool.py audit/update/withdraw`，更新和撤回必须带当前 revision，不修改 planned、published 或 unconfirmed 条目。
 
 ## 最终汇报格式（X 汽车完整流水线必选）

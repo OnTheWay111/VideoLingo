@@ -64,7 +64,7 @@
 - Chrome 登录态和上传页验证通过，Cookie 值未输出。
 - 页面不是降级页，标题和正文已复读核验。
 - 发布按钮在无障碍树中启用，不使用固定屏幕坐标。
-- 每次只执行当前一条计划；其余候选保持排队，可继续逐条生成计划，异常和待确认立即停止。
+- 每次只执行当前一条计划；其余候选保持排队，可继续逐条生成计划，执行异常停止当前调用；待确认视频按 ID 隔离，下一轮可选择其他视频。
 - 初始化、发布或异常退出的临时 Chrome 和配置均已清理。
 
 ## 五、回归测试要求
@@ -74,7 +74,7 @@
 
 ## 六、统一发布入口与中断恢复
 
-只有用户明确要求发布时才调用 `scripts/publish_pipeline.py --out <out>`；默认选题任务由 candidate_pipeline.py 核验后只入池。默认本次一条，`--max-items N` 是本次上限；同一会话逐条执行，缺链接或异常即停止。`publication_pipeline_receipt.json` 提供总结果、逐条结果和效果到期任务。
+只有用户明确要求发布时才调用 `scripts/publish_pipeline.py --out <out>`；默认选题任务由 candidate_pipeline.py 核验后只入池。默认本次一条，`--max-items N` 是本次上限；同一会话逐条执行，缺链接仅登记待补查，不停止其他视频；本次执行异常停止当前调用。`publication_pipeline_receipt.json` 提供总结果、逐条结果和效果到期任务。
 
 - 执行锁覆盖 Profile 和历史，已有进程执行时第二个进程立即返回阻塞。不要删除锁文件；文件锁随进程退出释放。
 - `<历史文件主名>.submission.json` 保存计划快照与状态，不含 Cookie。`submitting` 表示可能已发送提交，不能自动重发。先核验后台，已发布则登记 `published` 和真实链接；确认未发布才用 `publish_history.py resolve` 写入 `failed`。再运行统一入口恢复。
@@ -85,3 +85,9 @@
 - 草稿提交中断同样阻断，不自动重存；核验已保存后用 `xiaohongshu_publisher.py record-draft --status draft_saved` 登记，确认未保存则用 `publish_history.py --history-file <草稿历史路径> resolve --source-id <ID> --title <标题> --reason <核验依据>` 更正为 failed，再运行统一入口。不能删除日志来假装未提交。
 
 新增回归覆盖执行互斥、点击响应丢失、成功后写盘中断、从日志恢复、完整文案、唯一链接和连续发布停止条件。离线测试使用模拟浏览器和临时历史，不等同于线上页面验证；真实发布回归只在另有实际发布任务时执行，不能为代码测试擅自发笔记。
+
+## 七、按视频隔离发布状态
+
+历史缺公开链接不再阻断新视频。`published` 仅表示明确提交成功；`submission_status` 和 `public_link_status` 分开记录提交确认与链接可用性。当前视频补链接失败时仍计为提交成功，汇总 `pending_links` 提供待办。新入口不扫描全部历史补链接。
+
+未知提交重启后记为该原帖 ID 的 `unconfirmed`，完整提交快照归档到 `<历史文件主名>.submission.unconfirmed/`，随后释放共享日志供其他视频使用；不是释放该候选。选队列时排除已发布和待确认 ID，显式指定待确认视频在启动浏览器前阻断。已归档的未确认记录后续经后台核验 resolve 为 failed 时，恢复流程才释放对应候选。登录失效、风控和写盘失败仍如实报告，不能借此伪造成功。

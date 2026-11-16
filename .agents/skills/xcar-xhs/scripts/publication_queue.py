@@ -12,7 +12,7 @@ from pathlib import Path
 from content_policy import content_duplicate, content_identity
 from publish_history import locked_history
 from publication_runtime import atomic_json
-from candidate_review import validate_review, file_digest
+from candidate_review import validate_review, validate_publication_review, file_digest
 
 DEFAULT_QUEUE_FILE = Path(__file__).resolve().parents[1] / "state" / "publish_queue.json"
 WAITING_STATUSES = {"queued", "planned"}
@@ -108,15 +108,18 @@ class PublicationQueue:
                 write_queue(handle, data)
         return added
 
-    def select(self, latest_published=None):
+    def select(self, latest_published=None, excluded_source_ids=()):
+        excluded_source_ids = set(map(str, excluded_source_ids))
         self.audit()
         with locked_queue(self.path, create=True) as handle:
             data = read_queue(handle)
             entries = data["entries"]
-            planned = next((entry for entry in entries if entry.get("status") == "planned"), None)
+            planned = next((entry for entry in entries if entry.get("status") == "planned"
+                            and entry.get("source_id") not in excluded_source_ids), None)
             if planned:
                 return planned
-            waiting = [entry for entry in entries if entry.get("status") == "queued"]
+            waiting = [entry for entry in entries if entry.get("status") == "queued"
+                       and entry.get("source_id") not in excluded_source_ids]
             waiting.sort(key=lambda entry: (-float(entry.get("score") or 0), entry.get("enqueued_at") or ""))
             latest_identity = content_identity(latest_published or {})
             latest_series = (latest_published or {}).get("topic_series_id") or ""
@@ -241,8 +244,9 @@ class PublicationQueue:
                     status, reason = 'invalid', '视频文件缺失或为空'
                 else:
                     try:
-                        validate_review(item)
-                        checked = datetime.datetime.fromisoformat(item['verification']['reviewed_at'].replace('Z', '+00:00'))
+                        validate_publication_review(item)
+                        reviewed_at = item['verification'].get('reviewed_at') or entry['enqueued_at']
+                        checked = datetime.datetime.fromisoformat(reviewed_at.replace('Z', '+00:00'))
                         if checked.tzinfo is None:
                             checked = checked.replace(tzinfo=datetime.timezone.utc)
                         if max_age_days > 0 and (now - checked).total_seconds() > max_age_days * 86400:

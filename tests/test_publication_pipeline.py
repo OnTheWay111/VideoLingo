@@ -68,8 +68,9 @@ def test_click_journal_precedes_mouse_and_response_loss(tmp_path, setup_plan):
     with pytest.raises(RuntimeError, match='response lost'):
         session.click_publish()
     assert session.publish_clicked
-    with pytest.raises(RuntimeError, match='禁止自动重发'):
-        chrome.recover_submission(history)
+    chrome.recover_submission(history)
+    assert SubmissionJournal(history.path).read()['resolution'] == 'unconfirmed'
+    assert len(list(SubmissionJournal(history.path).unresolved_archives())) == 1
     assert history.check(plan['source_id'])['status'] == 'unconfirmed'
 
 
@@ -91,8 +92,7 @@ def test_explicit_failed_resolution_requeues_interrupted_submission(tmp_path, se
     history, plan = setup_plan
     journal = SubmissionJournal(history.path)
     journal.write('submitting', plan, tmp_path)
-    with pytest.raises(RuntimeError):
-        chrome.recover_submission(history)
+    chrome.recover_submission(history)
     history.add(plan['source_id'], plan['title'], status='failed', reason='后台确认没有发布')
     chrome.recover_submission(history)
     assert PublicationQueue(history_path=history.path).records()[0]['status'] == 'queued'
@@ -165,22 +165,48 @@ def test_one_call_publishes_and_attaches_note_one_session(tmp_path, setup_plan, 
     assert 'metrics' in result
 
 
-def test_missing_link_stops_batch_and_resume_never_republishes(tmp_path, setup_plan, fake_browser, monkeypatch):
-    history, plan = setup_plan
+def test_missing_link_does_not_stop_other_videos_or_republish(tmp_path, fake_browser, monkeypatch):
+    from tests.test_xiaohongshu_publisher import finalized_batch
+    finalized_batch(tmp_path)
+    history = PublishedHistory(tmp_path / 'history.jsonl')
+    history.add('old', '历史笔记无链接', status='published')
     monkeypatch.setattr(FakeChrome, 'note_url', '')
     result = pipeline.run_pipeline(tmp_path, history, max_items=3)
-    assert result['status'] == 'note_url_pending'
-    assert fake_browser.published == 1
-    pipeline.run_pipeline(tmp_path, history, max_items=3)
-    assert fake_browser.published == 1
+    assert result['status'] == 'complete'
+    assert result['published'] == 3
+    assert fake_browser.published == 3
+    assert all(r['note_url_pending'] for r in result['results'])
+    assert len(result['pending_links']) == 4
+    pipeline.run_pipeline(tmp_path, history)
+    assert fake_browser.published == 3
 
 
-def test_crashed_submission_blocks_before_browser(tmp_path, setup_plan, fake_browser):
+def test_crashed_submission_blocks_only_same_video_before_browser(tmp_path, setup_plan, fake_browser):
     history, plan = setup_plan
     SubmissionJournal(history.path).write('submitting', plan, tmp_path)
-    result = pipeline.run_pipeline(tmp_path, history)
+    result = pipeline.run_pipeline(tmp_path, history, tweet_id=plan['source_id'])
     assert result['status'] == 'blocked'
     assert fake_browser.sessions == 0
+    assert history.check(plan['source_id'])['status'] == 'unconfirmed'
+
+
+def test_crashed_submission_allows_other_video_and_keeps_evidence(tmp_path, fake_browser):
+    from tests.test_xiaohongshu_publisher import finalized_batch
+    finalized_batch(tmp_path)
+    history = PublishedHistory(tmp_path / 'history.jsonl')
+    plan = pipeline.build_plan(tmp_path, None, history)
+    SubmissionJournal(history.path).write('submitting', plan, tmp_path)
+    result = pipeline.run_pipeline(tmp_path, history)
+    assert result['status'] == 'complete'
+    assert result['published'] == 1
+    assert result['results'][0]['source_id'] != plan['source_id']
+    assert history.check(plan['source_id'])['status'] == 'unconfirmed'
+    archives = list(SubmissionJournal(history.path).unresolved_archives())
+    assert len(archives) == 1
+    assert archives[0][1]['plan'] == plan
+    blocked = pipeline.run_pipeline(tmp_path, history, tweet_id=plan['source_id'])
+    assert blocked['status'] == 'blocked'
+    assert fake_browser.published == 1
 
 
 def test_preview_does_not_open_browser(tmp_path, setup_plan, fake_browser):
@@ -315,3 +341,64 @@ def test_backend_cover_rejects_multiple_opened_pages():
     session.call = call
     assert session.open_public_note({'x': 12, 'y': 34}) == ''
     assert [p['targetId'] for m, p in calls if m == 'Target.closeTarget'] == ['a', 'b']
+
+
+def test_archived_resolution_survives_later_submission(tmp_path, fake_browser):
+    from tests.test_xiaohongshu_publisher import finalized_batch
+    finalized_batch(tmp_path)
+    history = PublishedHistory(tmp_path / 'history.jsonl')
+    plan = pipeline.build_plan(tmp_path, None, history)
+    journal = SubmissionJournal(history.path)
+    journal.write('submitting', plan, tmp_path)
+    assert pipeline.run_pipeline(tmp_path, history)['published'] == 1
+    history.add(plan['source_id'], plan['title'], status='failed', reason='后台确认未提交')
+    chrome.recover_submission(history)
+    entry = next(r for r in PublicationQueue(history_path=history.path).records()
+                 if r['source_id'] == plan['source_id'])
+    assert entry['status'] == 'queued'
+    assert not list(journal.unresolved_archives())
+
+
+def test_unconfirmed_history_excludes_stale_planned_queue_entry(tmp_path, fake_browser):
+    from tests.test_xiaohongshu_publisher import finalized_batch
+    finalized_batch(tmp_path)
+    history = PublishedHistory(tmp_path / 'history.jsonl')
+    plan = pipeline.build_plan(tmp_path, None, history)
+    history.add(plan['source_id'], plan['title'], status='unconfirmed')
+    result = pipeline.run_pipeline(tmp_path, history)
+    assert result['published'] == 1
+    assert result['results'][0]['source_id'] != plan['source_id']
+    current = history.check(result['results'][0]['source_id'])
+    assert current['submission_status'] == 'confirmed'
+    assert current['public_link_status'] == 'available'
+
+
+def test_existing_legacy_candidate_publishes_without_reenqueue(tmp_path, setup_plan, fake_browser):
+    history, plan = setup_plan
+    queue = PublicationQueue(history_path=history.path)
+    data = json.loads(queue.path.read_text())
+    entry = data['entries'][0]
+    entry['status'] = 'queued'
+    entry['item']['verification'] = {'status': 'verified', 'presentation': 'car_only'}
+    queue.path.write_text(json.dumps(data))
+    manifest_path = tmp_path / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['downloads'][0]['verification'] = entry['item']['verification']
+    manifest_path.write_text(json.dumps(manifest))
+    result = pipeline.run_pipeline(tmp_path, history)
+    assert result['published'] == 1
+    assert result['status'] == 'complete'
+
+
+def test_publication_review_omits_rights_but_ingestion_still_validates(tmp_path, setup_plan):
+    from candidate_review import validate_review, validate_publication_review
+    history, plan = setup_plan
+    item = PublicationQueue(history_path=history.path).records()[0]['item']
+    item['verification'].pop('rights_evidence')
+    item['verification'].pop('rights_source')
+    validate_publication_review(item)
+    with pytest.raises(ValueError, match='rights_evidence'):
+        validate_review(item)
+    item['verification']['video_sha256'] = 'changed'
+    with pytest.raises(ValueError, match='视频已变化'):
+        validate_publication_review(item)

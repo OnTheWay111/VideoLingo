@@ -8,7 +8,7 @@ import sys
 from urllib.parse import urlsplit
 from pathlib import Path
 from publication_runtime import atomic_json, execution_lock
-from candidate_review import validate_review
+from candidate_review import validate_review, validate_publication_review
 
 from content_policy import (
     SCORE_THRESHOLD,
@@ -52,7 +52,7 @@ def load_download(out_dir, tweet_id):
     raise ValueError("manifest.json 的入选记录中找不到推文 ID：%s" % tweet_id)
 
 
-def validate_content(item):
+def validate_content(item, publication=False):
     forbidden = forbidden_topic_match(item)
     if forbidden:
         raise ValueError("小红书禁选主题，禁止生成发布计划：%s" % forbidden)
@@ -82,7 +82,10 @@ def validate_content(item):
     item.setdefault("verification", {})["score"] = score
     item["verification"]["score_breakdown"] = breakdown
     item["verification"]["score_threshold"] = SCORE_THRESHOLD
-    validate_review(item)
+    if publication:
+        validate_publication_review(item)
+    else:
+        validate_review(item)
     return title, body, [topic.strip() for topic in topics], video.resolve(), details
 
 
@@ -103,15 +106,13 @@ def latest_published_record(history):
     return max(published, key=lambda record: str(record.get("published_at") or record.get("recorded_at") or ""))
 
 
-def ensure_publish_available(history):
-    records = latest_records(history.records())
-    unconfirmed = next((record for record in records if record.get("status") == "unconfirmed"), None)
-    if unconfirmed:
-        raise ValueError("仍有发布结果待确认：%s；请先核验后台，不能继续发布" % unconfirmed.get("title"))
-    latest = latest_published_record(history)
-    if any(record.get("status") == "published" and not record.get("note_url") for record in records):
-        raise ValueError("已发布内容缺少真实公开笔记地址；请先运行 attach-note 补齐")
-    return latest
+def ensure_publish_available(history, source_id=None, title=""):
+    """链接缺失不是发布失败；待确认状态只阻止同一素材重发。"""
+    if source_id is not None:
+        match = history.check(source_id, title)
+        if match and match.get("status") == "unconfirmed":
+            raise ValueError("该视频提交结果待确认，禁止重发：%s" % match.get("title"))
+    return latest_published_record(history)
 
 
 def topic_metadata(item):
@@ -140,6 +141,8 @@ def prepare_item(item, topic_plan):
 def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=None):
     if action not in ACTIONS:
         raise ValueError("action 必须是 preview、draft 或 publish")
+    if action == "publish" and tweet_id:
+        ensure_publish_available(history, tweet_id)
     out_dir = Path(out_dir).resolve()
     manifest = load_manifest(out_dir)
     minimum_selected = manifest.get("minimum_selected")
@@ -158,7 +161,10 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
         item = prepare_item(load_download(out_dir, tweet_id), topic_plan)
     else:
         candidates = []
+        existing_ids = {str(entry['source_id']) for entry in queue.records()}
         for original in manifest.get("downloads", []):
+            if str(original.get('candidate', {}).get('id')) in existing_ids:
+                continue  # 已入池候选直接选取；不从旧 manifest 覆盖或重新入池。
             item = prepare_item(original, topic_plan)
             validate_content(item)
             candidate = item["candidate"]
@@ -171,7 +177,9 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
             candidates.append(item)
         queue.enqueue(candidates, out_dir)
         latest = ensure_publish_available(history)
-        entry = queue.select(latest)
+        entry = queue.select(latest, excluded_source_ids={
+            str(r.get("source_id")) for r in latest_records(history.records())
+            if r.get("status") in ACTIVE_STATUSES})
         if not entry:
             raise ValueError("队列中没有与上一条不相似的素材；相似内容继续保留")
         if tweet_id and str(tweet_id) != entry["source_id"]:
@@ -184,7 +192,7 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
                           and record.get('topic_series_id') == item['topic_series_id']]
         item['topic_series_episode'] = len(series_records) + 1
     candidate = item["candidate"]
-    title, body, topics, video, details = validate_content(item)
+    title, body, topics, video, details = validate_content(item, publication=True)
     match = history.check(candidate.get("id"), title)
     base = {
         "source_id": str(candidate.get("id")),
@@ -265,6 +273,8 @@ def record_result(out_dir, history, status="published", note_url="", result_url=
         plan["source_id"], plan["title"], plan.get("source_url", ""), status,
         note_url=note_url, result_url=result_url, video_file=plan.get("video_file", ""),
         note_url_pending=status == "published" and not note_url,
+        submission_status="confirmed" if status == "published" else "unconfirmed",
+        public_link_status="available" if note_url else "pending",
         **topic_metadata(plan),
     )
     if note_url and record.get("note_url") != note_url:

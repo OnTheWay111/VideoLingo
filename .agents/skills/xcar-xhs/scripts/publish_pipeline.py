@@ -9,7 +9,7 @@ from chrome_xiaohongshu import ChromeSession, recover_note_urls, recover_submiss
 from note_metrics import NoteMetrics
 from publication_runtime import atomic_json, execution_lock
 from publish_history import PublishedHistory, default_history_path
-from xiaohongshu_publisher import build_plan, ensure_publish_available, save_plan
+from xiaohongshu_publisher import build_plan, ensure_publish_available, save_plan, latest_records
 
 
 def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True,
@@ -31,14 +31,17 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                 summary['plan'] = plan
                 return summary
             recover_submission(history)
+            if action == "publish":
+                ensure_publish_available(history, tweet_id)
             with ChromeSession(profile, headless, timeout) as chrome:
                 chrome.navigate_publish()  # 同一会话完成预检和发布。
                 if action == 'publish':
-                    pending = recover_note_urls(chrome, out_dir, history)
-                    if pending:
-                        summary.update(status='note_url_pending', pending=pending)
-                        return summary
-                    ensure_publish_available(history)
+                    # 历史链接补查独立于发布，避免旧记录拖慢或阻断新素材。
+                    summary['pending_links'] = [
+                        {'source_id': r['source_id'], 'title': r.get('title', '')}
+                        for r in latest_records(history.records())
+                        if r.get('status') == 'published' and not r.get('note_url')]
+                    ensure_publish_available(history, tweet_id)
                 for _ in range(max_items):
                     plan = build_plan(out_dir, tweet_id, history, action)
                     save_plan(out_dir, plan)
@@ -54,8 +57,7 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                         break
                     pending = [r for r in result['results'] if r.get('note_url_pending')]
                     if pending:
-                        summary.update(status='note_url_pending', pending=pending)
-                        break
+                        summary.setdefault('pending_links', []).extend(pending)
                     # 历史已跳过的计划不能在同次运行中反复执行。
                     if not result['published'] and action == 'publish':
                         summary['status'] = 'skipped'

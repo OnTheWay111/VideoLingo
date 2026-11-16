@@ -66,3 +66,15 @@ class SubmissionJournal:
                  'updated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), **extra}
         atomic_json(self.path, value)
         return value
+
+    def archive_unconfirmed(self, attempt):
+        digest = hashlib.sha256(str(attempt['plan']['source_id']).encode()).hexdigest()
+        path = self.path.with_suffix('.unconfirmed') / (digest + '.json')
+        atomic_json(path, attempt)
+
+    def unresolved_archives(self):
+        directory = self.path.with_suffix('.unconfirmed')
+        for path in directory.glob('*.json'):
+            value = json.loads(path.read_text())
+            if not value.get('resolution'):
+                yield path, value

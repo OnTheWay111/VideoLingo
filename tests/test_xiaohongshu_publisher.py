@@ -498,7 +498,7 @@ def test_missing_verifiable_detail_blocks_publish_plan(tmp_path):
         xiaohongshu_publisher.build_plan(tmp_path, None, history)
 
 
-def test_missing_public_note_url_blocks_next_plan_until_attached(tmp_path):
+def test_missing_public_note_url_allows_next_plan_and_can_attach_later(tmp_path):
     finalized_batch(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     queue = publication_queue.PublicationQueue(history_path=history.path)
@@ -507,8 +507,7 @@ def test_missing_public_note_url_blocks_next_plan_until_attached(tmp_path):
     receipt = xiaohongshu_publisher.record_result(tmp_path, history, queue=queue)
 
     assert receipt["note_url_pending"] is True
-    with pytest.raises(ValueError, match="attach-note"):
-        xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
+    assert xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)["source_id"] == "300"
 
     attached = xiaohongshu_publisher.attach_note(
         tmp_path, history, plan["source_id"],

@@ -496,8 +496,18 @@ def load_plans(out_dir, only=None):
 
 
 def recover_submission(history):
-    """恢复已确认结果；提交中断只能阻断，不会自动再次点击。调用方持执行锁。"""
+    """恢复已确认结果；未知提交按素材隔离，不重发，也不阻断其他素材。"""
     journal = SubmissionJournal(history.path)
+    for path, archived in journal.unresolved_archives():
+        source_id = archived['plan']['source_id']
+        latest = next((r for r in reversed(history.records())
+                       if str(r.get('source_id')) == str(source_id)), None)
+        if latest and latest.get('status') == 'failed':
+            PublicationQueue(history_path=history.path).release(source_id, allow_unconfirmed=True)
+            atomic_json(path, {**archived, 'resolution': 'failed'})
+        elif latest and latest.get('status') == 'published':
+            PublicationQueue(history_path=history.path).complete(source_id, 'published', latest.get('note_url', ''))
+            atomic_json(path, {**archived, 'resolution': 'published'})
     attempt = journal.read()
     if not attempt or attempt['status'] == 'recorded':
         return
@@ -536,14 +546,20 @@ def recover_submission(history):
                       latest.get('result_url', ''), plan=plan)
         journal.write('recorded', plan, out_dir, resolution='published')
         return
-    record_result(out_dir, history, 'unconfirmed', plan=plan)
-    raise RuntimeError('上次提交中断，结果待确认；请核验后台后更正历史，禁止自动重发')
+    journal.archive_unconfirmed(attempt)
+    if not latest or latest.get('status') != 'unconfirmed':
+        record_result(out_dir, history, 'unconfirmed', plan=plan)
+    else:
+        PublicationQueue(history_path=history.path).complete(plan['source_id'], 'unconfirmed')
+    journal.write('recorded', plan, out_dir, resolution='unconfirmed')
 
 
-def recover_note_urls(chrome, out_dir, history):
+def recover_note_urls(chrome, out_dir, history, source_id=None):
     """只为已确认发布的记录补链接，不把标题匹配当成提交成功证据。"""
     unresolved = []
     for record in latest_records(history.records()):
+        if source_id is not None and str(record.get('source_id')) != str(source_id):
+            continue
         if record.get('status') != 'published' or record.get('note_url'):
             continue
         try:
@@ -596,6 +612,8 @@ def run_locked(out_dir, history, profile, headless, only=None, preflight=False, 
         if preflight:
             return {"status": "ready", "published": 0, "results": []}
         for plan in plans:
+            if plan["action"] == "publish":
+                ensure_publish_available(history, plan["source_id"], plan["title"])
             match = history.check(plan["source_id"], plan["title"])
             if match:
                 print("跳过已发布或待确认：%s" % plan["title"], flush=True)
@@ -623,7 +641,7 @@ def run_locked(out_dir, history, profile, headless, only=None, preflight=False, 
                 if result['status'] in ('published', 'draft_saved'):
                     journal.write('recorded', plan, out_dir, result=result)
                 if result['status'] == 'published' and not result.get('note_url'):
-                    pending = recover_note_urls(chrome, out_dir, history)
+                    pending = recover_note_urls(chrome, out_dir, history, source_id=plan["source_id"])
                     result['note_url_pending'] = bool(pending)
                     match = history.check(plan['source_id'])
                     if match and match.get('note_url'):

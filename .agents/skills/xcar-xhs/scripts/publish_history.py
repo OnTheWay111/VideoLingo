@@ -138,6 +138,7 @@ class PublishedHistory:
             record = {key: value for key, value in existing.items() if key != "matched_by"}
             record["note_url"] = note_url.strip()
             record["note_url_pending"] = False
+            record["public_link_status"] = "available"
             record["note_url_recorded_at"] = datetime.datetime.now(
                 datetime.timezone.utc).isoformat(timespec="seconds")
             handle.seek(0, os.SEEK_END)
