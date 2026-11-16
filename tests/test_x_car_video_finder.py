@@ -137,7 +137,7 @@ def publish_candidate(tweet_id):
     return {
         "id": tweet_id, "url": "https://x.com/car/status/%s" % tweet_id,
         "author": "car", "author_name": "Car", "date": "2026-11-08",
-        "likes": 10, "replies": 2, "reposts": 3, "views": 100,
+        "likes": 101, "replies": 2, "reposts": 3, "views": 100,
         "text": "Car video",
     }
 
@@ -587,6 +587,23 @@ def test_engagement_download_thresholds_are_inclusive_and_independent():
     allowed, skipped = finder.partition_engagement_candidates([low_likes, low_reposts], 0, 0)
     assert len(allowed) == 2
     assert skipped == []
+
+
+def test_total_engagement_must_be_strictly_greater_than_100():
+    boundary = publish_candidate("total-100")
+    boundary.update({"likes": 80, "replies": 10, "reposts": 10})
+    above = publish_candidate("total-101")
+    above.update({"likes": 80, "replies": 10, "reposts": 11})
+    missing = publish_candidate("missing-counts")
+    missing.update({"likes": None, "replies": None, "reposts": None})
+
+    allowed, skipped = finder.partition_engagement_candidates(
+        [boundary, above, missing], 0, 0)
+
+    assert [item["id"] for item in allowed] == ["total-101"]
+    assert [item["candidate"]["id"] for item in skipped] == ["total-100", "missing-counts"]
+    assert "互动总量 100 ≤ 100" in skipped[0]["reason"]
+    assert "互动总量 0 ≤ 100" in skipped[1]["reason"]
 
 
 def test_batch_deduplicates_brand_and_keeps_highest_scored_item():

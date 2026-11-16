@@ -360,6 +360,13 @@ def run_pipeline(args, backend=None):
                         args.operation_timeout = max(1, int(deadline - time.monotonic()))
                         item = entry['item']
                         source_id = str(item['candidate']['id'])
+                        engagement_reason = finder.engagement_filter_reason(
+                            item['candidate'], args.min_likes, args.min_reposts)
+                        if engagement_reason:
+                            entry.update(status='skipped',
+                                         reason='互动不足，下载前跳过（%s）' % engagement_reason)
+                            checkpoint()
+                            continue
                         if source_id in occupied or history.check(source_id=source_id):
                             entry.update(status='skipped', reason='下载前发现重复或其他任务占用')
                             checkpoint()
@@ -434,12 +441,13 @@ def run_pipeline(args, backend=None):
                     candidate = finder.normalize(tweet, re.compile(finder.CAR_LEXICON), [], True)
                     if not candidate:
                         continue
-                    if candidate['likes'] < args.min_likes or candidate['reposts'] < args.min_reposts:
-                        continue
                     source_id = str(candidate['id'])
                     if source_id in state['items']:
                         continue
-                    reason = (registry['rejected'].get(source_id, {}).get('reason') or
+                    engagement_reason = finder.engagement_filter_reason(
+                        candidate, args.min_likes, args.min_reposts)
+                    reason = (engagement_reason or
+                              registry['rejected'].get(source_id, {}).get('reason') or
                               ('原帖已入池或被预约' if source_id in occupied else '') or
                               ('已发布或待确认' if history.check(source_id=source_id) else '') or
                               forbidden_topic_match(candidate))

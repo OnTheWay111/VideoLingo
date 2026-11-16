@@ -71,6 +71,17 @@ def finalized_output(tmp_path, tweet_id="123", title="S660 的 660cc 在哪？")
     return item
 
 
+def test_queue_rejects_total_engagement_at_or_below_100(tmp_path):
+    item = finalized_output(tmp_path)
+    item["candidate"].update(likes=80, replies=10, reposts=10)
+    queue = publication_queue.PublicationQueue(tmp_path / "pool.json")
+
+    with pytest.raises(ValueError, match="互动总量 100 ≤ 100"):
+        queue.enqueue([item], tmp_path)
+
+    assert queue.records() == []
+
+
 def test_history_matches_id_and_normalized_title_without_duplicates(tmp_path):
     path = tmp_path / "published.jsonl"
     history = publish_history.PublishedHistory(path)

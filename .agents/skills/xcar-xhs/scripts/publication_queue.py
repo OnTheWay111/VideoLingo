@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from content_policy import content_duplicate, content_identity
+from content_policy import content_duplicate, content_identity, engagement_rejection_reason
 from publish_history import locked_history
 from publication_runtime import atomic_json
 from candidate_review import validate_review, validate_publication_review, file_digest
@@ -71,6 +71,9 @@ class PublicationQueue:
     def enqueue(self, items, out_dir):
         items = copy.deepcopy(items)
         for item in items:
+            engagement_reason = engagement_rejection_reason(item)
+            if engagement_reason:
+                raise ValueError("互动不足，禁止进入候选池：" + engagement_reason)
             validate_review(item)
         added = []
         with locked_queue(self.path, create=True) as handle:

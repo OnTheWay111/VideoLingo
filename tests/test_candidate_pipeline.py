@@ -33,8 +33,24 @@ def args_for(tmp_path, **values):
 
 def tweet(source_id):
     return {'id': str(source_id), 'url': 'https://x.com/car/status/' + str(source_id),
-            'text': 'Rare car design details', 'favorite_count': 10,
+            'text': 'Rare car design details', 'favorite_count': 101,
+            'reply_count': 1, 'retweet_count': 1,
             'author': {'screen_name': 'car'}, 'media': [{'type': 'video', 'url': 'https://example.com/v'}]}
+
+
+def test_pipeline_skips_total_engagement_at_or_below_100_before_download(tmp_path):
+    args = args_for(tmp_path, max_pages=1)
+    low = tweet('1')
+    low.update(favorite_count=80, reply_count=10, retweet_count=10)
+    backend = FakeBackend([([low], None)])
+
+    result = pipeline.run_pipeline(args, backend)
+
+    assert result['status'] == 'budget_exhausted'
+    assert backend.downloads == []
+    state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
+    assert state['items']['1']['status'] == 'skipped'
+    assert '互动总量 100 ≤ 100' in state['items']['1']['reason']
 
 
 def test_query_expansion_preserves_model_action_and_negative_constraints():

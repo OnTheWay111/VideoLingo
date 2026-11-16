@@ -6,6 +6,7 @@ import math
 import re
 
 SCORE_THRESHOLD = 70
+MIN_TOTAL_ENGAGEMENT = 100
 SCORE_RUBRIC = {
     "first_three_seconds": 25,
     "knowledge_point": 25,
@@ -28,6 +29,38 @@ BRAND_ALIASES = {
     "suzuki": "suzuki", "铃木": "suzuki",
     "autozam": "autozam",
 }
+
+
+def _count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def engagement_counts(item):
+    """返回候选的点赞、评论、转发数；兼容 X 原始字段和归一化字段。"""
+    candidate = item.get("candidate") if isinstance(item, dict) else None
+    candidate = candidate if isinstance(candidate, dict) else (item or {})
+    return {
+        "likes": _count(candidate.get("likes", candidate.get("favorite_count"))),
+        "replies": _count(candidate.get("replies", candidate.get("reply_count"))),
+        "reposts": _count(candidate.get("reposts", candidate.get("retweet_count"))),
+    }
+
+
+def engagement_total(item):
+    return sum(engagement_counts(item).values())
+
+
+def engagement_rejection_reason(item, minimum=MIN_TOTAL_ENGAGEMENT):
+    """总互动量必须严格大于 minimum；等于门槛也拒绝。"""
+    counts = engagement_counts(item)
+    total = sum(counts.values())
+    if total > minimum:
+        return ""
+    return "互动总量 %d ≤ %d（点赞 %d + 评论 %d + 转发 %d）" % (
+        total, minimum, counts["likes"], counts["replies"], counts["reposts"])
 
 
 def normalized(value):

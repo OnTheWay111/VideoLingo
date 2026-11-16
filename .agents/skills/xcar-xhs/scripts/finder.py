@@ -32,6 +32,7 @@ from web_session import (
     ytdlp_session_args,
 )
 from publish_history import PublishedHistory, default_history_path
+from content_policy import MIN_TOTAL_ENGAGEMENT, engagement_rejection_reason, engagement_total
 from topic_planner import build_topic_plan
 from topic_policy import partition_forbidden_topics
 
@@ -350,20 +351,28 @@ def partition_published_candidates(candidates, history):
     return fresh, skipped
 
 
+def engagement_filter_reason(candidate, min_likes=0, min_reposts=0):
+    reasons = []
+    mandatory_reason = engagement_rejection_reason(candidate)
+    if mandatory_reason:
+        reasons.append(mandatory_reason)
+    likes = to_int(candidate.get("likes"))
+    reposts = to_int(candidate.get("reposts"))
+    if min_likes and likes < min_likes:
+        reasons.append("点赞 %d < %d" % (likes, min_likes))
+    if min_reposts and reposts < min_reposts:
+        reasons.append("转发 %d < %d" % (reposts, min_reposts))
+    return "；".join(reasons)
+
+
 def partition_engagement_candidates(candidates, min_likes, min_reposts):
     allowed, skipped = [], []
     for candidate in candidates:
-        likes = to_int(candidate.get("likes"))
-        reposts = to_int(candidate.get("reposts"))
-        insufficient = []
-        if min_likes and likes < min_likes:
-            insufficient.append("点赞 %d < %d" % (likes, min_likes))
-        if min_reposts and reposts < min_reposts:
-            insufficient.append("转发 %d < %d" % (reposts, min_reposts))
-        if insufficient:
+        reason = engagement_filter_reason(candidate, min_likes, min_reposts)
+        if reason:
             skipped.append({
                 "candidate": candidate,
-                "reason": "互动不足，下载前跳过（%s）" % "；".join(insufficient),
+                "reason": "互动不足，下载前跳过（%s）" % reason,
             })
         else:
             allowed.append(candidate)
@@ -490,8 +499,9 @@ def selection_target(args):
 
 
 def download_candidates(ranked, target, history, videos_dir, rejected_dir, frames_dir, args,
-                        publish_skipped):
+                        publish_skipped, engagement_skipped=None):
     downloads, rejected = [], []
+    engagement_skipped = engagement_skipped if engagement_skipped is not None else []
     for candidate in ranked:
         if len(downloads) >= target:
             break
@@ -500,6 +510,15 @@ def download_candidates(ranked, target, history, videos_dir, rejected_dir, frame
             publish_skipped.append({"candidate": candidate, "match": match,
                                     "reason": "已发布过，下载前跳过"})
             log("  发布状态已变化，跳过 %s" % candidate["url"])
+            continue
+        reason = engagement_filter_reason(
+            candidate, getattr(args, "min_likes", 0), getattr(args, "min_reposts", 0))
+        if reason:
+            engagement_skipped.append({
+                "candidate": candidate,
+                "reason": "互动不足，下载前跳过（%s）" % reason,
+            })
+            log("  互动状态不满足门槛，跳过 %s" % candidate["url"])
             continue
         video, error = download_video(candidate, videos_dir, args)
         if not video:
@@ -536,6 +555,7 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
         "download_complete": len(downloads) >= target if target else None,
         "selection_complete": False,
         "download_thresholds": {
+            "min_total_engagement_exclusive": MIN_TOTAL_ENGAGEMENT,
             "min_likes": getattr(args, "min_likes", 0),
             "min_reposts": getattr(args, "min_reposts", 0),
         },
@@ -581,8 +601,8 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
              "- 视频时长：%s" % duration_rule,
              "- 核验入选数量：至少 %d 条；%s" % (
                  MIN_PUBLISH_SELECTION, selection_status),
-             "- 互动过滤：转发 ≥ %d 且点赞 ≥ %d（默认均为 0，仅作弱参考）；下载前跳过 %d 条" % (
-                 getattr(args, "min_reposts", 0), getattr(args, "min_likes", 0),
+             "- 互动过滤：点赞 + 评论 + 转发必须 > %d；另加转发 ≥ %d、点赞 ≥ %d 的可选门槛；下载前跳过 %d 条" % (
+                 MIN_TOTAL_ENGAGEMENT, getattr(args, "min_reposts", 0), getattr(args, "min_likes", 0),
                  len(engagement_skipped)),
              "- 发布历史：`%s`；下载前跳过 %d 条" % (history_path, len(publish_skipped)),
              "- 检索式：%d 组，候选视频推文 %d 条，非汽车剔除 %d 条，入选 %d 条，淘汰 %d 条" % (
@@ -623,12 +643,13 @@ def write_outputs(args, prompt, queries, candidates, downloads, rejected, droppe
                 (match.get("title") or "").replace("|", "/")))
     if engagement_skipped:
         lines += ["", "## 互动不足跳过（未下载）", "",
-                  "| 唯一 ID | 转发 | 点赞 | 原帖 | 跳过原因 |",
-                  "|---|---|---|---|---|"]
+                  "| 唯一 ID | 点赞 | 评论 | 转发 | 总互动 | 原帖 | 跳过原因 |",
+                  "|---|---|---|---|---|---|---|"]
         for item in engagement_skipped:
             candidate = item["candidate"]
-            lines.append("| %s | %d | %d | [链接](%s) | %s |" % (
-                candidate["id"], candidate["reposts"], candidate["likes"],
+            lines.append("| %s | %d | %d | %d | %d | [链接](%s) | %s |" % (
+                candidate["id"], candidate["likes"], candidate["replies"],
+                candidate["reposts"], engagement_total(candidate),
                 candidate["url"], item["reason"]))
     if topic_skipped:
         lines += ["", "## 小红书禁选跳过（未下载）", "",
@@ -697,9 +718,9 @@ def build_parser():
     ap.add_argument("--type", choices=("top", "latest", "media"), default="top")
     ap.add_argument("--since", default=None)
     ap.add_argument("--min-likes", type=int, default=0,
-                    help="点赞下载下限，默认 0（点赞仅作弱参考）；显式大于 0 才过滤")
+                    help="总互动 > 100 之外的可选点赞下限；显式大于 0 才过滤")
     ap.add_argument("--min-reposts", type=int, default=0,
-                    help="转发下载下限，默认 0；本地过滤，显式大于 0 才过滤")
+                    help="总互动 > 100 之外的可选转发下限；显式大于 0 才过滤")
     ap.add_argument("--delay", type=float, default=1.5)
     ap.add_argument("--out", default="work/xfetch-run")
     ap.add_argument("--publish-history", default=str(default_history_path()),
@@ -825,7 +846,8 @@ def main():
     target = selection_target(args)
     if target:
         downloads, rejected = download_candidates(
-            ranked, target, history, videos_dir, rejected_dir, frames_dir, args, publish_skipped)
+            ranked, target, history, videos_dir, rejected_dir, frames_dir, args,
+            publish_skipped, engagement_skipped)
 
     stats["already_published_skipped"] = len(publish_skipped)
     stats["rejected_over_duration"] = len(rejected)
