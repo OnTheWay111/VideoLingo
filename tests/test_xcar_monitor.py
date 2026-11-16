@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / '.agents/skills/xcar-xhs/scri
 
 from monitor import MonitorData
 from monitor_telemetry import record_event, record_usage
+from monitor_service import LABEL, MONITOR_SCRIPT, PROJECT_ROOT, service_definition, service_target
 
 
 def write_json(path, value):
@@ -117,3 +118,16 @@ def test_usage_rejects_invalid_stage_and_cached_over_input(tmp_path):
         record_usage({'request_id': 'bad-2', 'flow': 'candidate', 'stage': 'search_filter',
                       'input_tokens': 1, 'cached_input_tokens': 2, 'output_tokens': 1},
                      tmp_path / 'usage.jsonl')
+
+
+def test_launchd_service_definition_keeps_monitor_alive():
+    definition = service_definition('/opt/example/python3')
+    assert definition['Label'] == LABEL
+    assert definition['RunAtLoad'] is True
+    assert definition['KeepAlive'] is True
+    assert definition['WorkingDirectory'] == str(PROJECT_ROOT)
+    assert definition['ProgramArguments'] == [
+        '/opt/example/python3', str(MONITOR_SCRIPT),
+        '--host', '127.0.0.1', '--port', '8769',
+    ]
+    assert service_target(501) == 'gui/501/' + LABEL
