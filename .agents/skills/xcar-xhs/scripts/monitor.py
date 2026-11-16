@@ -5,6 +5,7 @@ import argparse
 import datetime
 import json
 import mimetypes
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,6 +88,34 @@ def item_view(entry, kind, usage_by_job):
     }
 
 
+def pool_item_view(entry):
+    item = entry.get("item") or {}
+    candidate = item.get("candidate") or {}
+    topics = item.get("topics") or []
+    if isinstance(topics, str):
+        topics = topics.split()
+    def metric(*values):
+        value = next((candidate for candidate in values if candidate not in (None, "")), None)
+        return int(value) if value is not None else None
+    source_url = candidate.get("url") or entry.get("source_url") or ""
+    if urlparse(source_url).scheme not in ("http", "https"):
+        source_url = ""
+    return {
+        "source_id": str(entry.get("source_id") or candidate.get("id") or ""),
+        "status": entry.get("status") or "queued",
+        "title": entry.get("title") or item.get("title") or "未命名视频",
+        "body": item.get("body") or item.get("recommendation") or "",
+        "topics": [str(topic) for topic in topics],
+        "likes": metric(candidate.get("likes"), candidate.get("favorite_count")),
+        "replies": metric(candidate.get("replies"), candidate.get("reply_count")),
+        "reposts": metric(candidate.get("reposts"), candidate.get("retweet_count")),
+        "source_url": source_url,
+        "out_dir": entry.get("out_dir") or "",
+        "directory_name": Path(entry.get("out_dir") or "").name,
+        "enqueued_at": entry.get("enqueued_at"),
+    }
+
+
 class MonitorData:
     def __init__(self, queue_file=None, history_file=None, event_file=None, usage_file=None):
         self.history_file = Path(history_file or default_history_path()).resolve()
@@ -94,15 +123,38 @@ class MonitorData:
         self.event_file = Path(event_file or DEFAULT_EVENT_FILE).resolve()
         self.usage_file = Path(usage_file or DEFAULT_USAGE_FILE).resolve()
 
+    def queue_records(self):
+        queue_data = read_json(self.queue_file, {"entries": []})
+        if not isinstance(queue_data, dict) or not isinstance(queue_data.get("entries"), list):
+            raise ValueError("发布队列必须是包含 entries 数组的 JSON 对象")
+        return queue_data["entries"]
+
+    def open_candidate_directory(self, source_id, opener=None):
+        source_id = str(source_id or "").strip()
+        if not source_id:
+            raise ValueError("source_id 不能为空")
+        entry = next((row for row in self.queue_records()
+                      if str(row.get("source_id") or "") == source_id
+                      and row.get("status") in ("queued", "planned")), None)
+        if not entry:
+            raise ValueError("候选池中没有该待发布视频")
+        output_dir = Path(entry.get("out_dir") or "").resolve()
+        folder = output_dir / "videos" if (output_dir / "videos").is_dir() else output_dir
+        if not folder.is_dir():
+            raise ValueError("Finder 目录不存在：%s" % folder)
+        if opener:
+            opener(folder)
+        else:
+            subprocess.run(["open", str(folder)], check=True, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"source_id": source_id, "folder": str(folder)}
+
     def snapshot(self, day=None):
         selected_day = day or datetime.datetime.now(TIMEZONE).date().isoformat()
         datetime.date.fromisoformat(selected_day)
         errors = []
         try:
-            queue_data = read_json(self.queue_file, {"entries": []})
-            if not isinstance(queue_data, dict) or not isinstance(queue_data.get("entries"), list):
-                raise ValueError("发布队列必须是包含 entries 数组的 JSON 对象")
-            queue = queue_data["entries"]
+            queue = self.queue_records()
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             queue, errors = [], ["候选池读取失败：" + str(exc)]
         try:
@@ -134,6 +186,9 @@ class MonitorData:
             if job_id:
                 usage_by_job[job_id] = usage_by_job.get(job_id, 0) + int(row.get("total_tokens") or 0)
         candidates = [row for row in queue if local_date(row.get("enqueued_at")) == selected_day]
+        pending_pool = [row for row in queue if row.get("status") in ("queued", "planned")]
+        pending_pool.sort(key=lambda row: (row.get("status") == "planned",
+                                           row.get("enqueued_at") or ""), reverse=True)
         published = [row for row in history
                      if row.get("status") == "published"
                      and local_date(row.get("published_at")) == selected_day]
@@ -158,6 +213,7 @@ class MonitorData:
             "quality": {"errors": errors, "business_events_collected": bool(events)},
             "summary": {
                 "candidate_count": len(candidates), "published_count": len(published),
+                "pending_pool_count": len(pending_pool),
                 "published_links_available": links_available,
                 "published_links_pending": len(published) - links_available,
             },
@@ -170,6 +226,7 @@ class MonitorData:
             },
             "token": token,
             "active_tasks": self._active_tasks(jobs, queue, events),
+            "pending_pool_items": [pool_item_view(row) for row in pending_pool],
             "candidate_items": [item_view(row, "candidate", usage_by_job) for row in candidates],
             "published_items": [item_view(row, "publish", usage_by_job) for row in published],
         }
@@ -304,7 +361,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/usage":
+        route = urlparse(self.path).path
+        if route not in ("/api/usage", "/api/open-folder"):
             self.send_error(404)
             return
         try:
@@ -312,9 +370,12 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > 64 * 1024:
                 raise ValueError("请求体必须为 1–65536 字节")
             payload = json.loads(self.rfile.read(length))
-            saved, added = record_usage(payload, self.data.usage_file)
-            self.send_json({"added": added, "usage": saved}, 201 if added else 200)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            if route == "/api/open-folder":
+                self.send_json(self.data.open_candidate_directory(payload.get("source_id")))
+            else:
+                saved, added = record_usage(payload, self.data.usage_file)
+                self.send_json({"added": added, "usage": saved}, 201 if added else 200)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
             self.send_json({"error": str(exc)}, 400)
 
 

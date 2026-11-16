@@ -334,7 +334,7 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 
 ## 本地运营监控与 Token 用量
 
-监控页只读候选池、发布历史、候选任务和业务事件；不会触发搜索、审核、入池或发布：
+监控页读取候选池、发布历史、候选任务和业务事件；不会触发搜索、审核、入池或发布。候选池区域按 `queued + planned` 展示待发布数量、标题、正文、话题、X 点赞/评论/转发和原帖链接；“打开目录”只会在 macOS Finder 中打开该候选记录已有的 `out_dir`，不会接受任意磁盘路径：
 
 ```bash
 python3 .agents/skills/xcar-xhs/scripts/monitor.py

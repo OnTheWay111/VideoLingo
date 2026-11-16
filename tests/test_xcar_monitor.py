@@ -52,6 +52,7 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
 
     assert snapshot['summary'] == {
         'candidate_count': 1, 'published_count': 1,
+        'pending_pool_count': 1,
         'published_links_available': 0, 'published_links_pending': 1,
     }
     assert snapshot['token']['candidate']['total_tokens'] == 120
@@ -60,6 +61,32 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
     assert snapshot['stages']['candidate'][1]['count'] == 1
     assert snapshot['active_tasks'][0]['current_stage'] == 'visual_fact_review'
     assert snapshot['active_tasks'][0]['progress']['awaiting_review'] == 1
+    assert snapshot['pending_pool_items'][0] == {
+        'source_id': 'candidate-1', 'status': 'queued', 'title': '真实候选',
+        'body': '', 'topics': [], 'likes': None, 'replies': None, 'reposts': None,
+        'source_url': 'https://x.com/car/status/candidate-1', 'out_dir': '',
+        'directory_name': '', 'enqueued_at': '2026-11-15T16:15:00+00:00',
+    }
+
+
+def test_open_candidate_directory_only_allows_waiting_queue_entry(tmp_path):
+    folder = tmp_path / 'finder-output'
+    folder.mkdir()
+    videos = folder / 'videos'
+    videos.mkdir()
+    queue = tmp_path / 'publish_queue.json'
+    write_json(queue, {'version': 1, 'entries': [
+        {'source_id': 'waiting', 'status': 'queued', 'out_dir': str(folder)},
+        {'source_id': 'done', 'status': 'published', 'out_dir': str(folder)},
+    ]})
+    opened = []
+    data = MonitorData(queue, tmp_path / 'history.jsonl',
+                       tmp_path / 'events.jsonl', tmp_path / 'usage.jsonl')
+
+    assert data.open_candidate_directory('waiting', opened.append)['folder'] == str(videos)
+    assert opened == [videos]
+    with pytest.raises(ValueError, match='没有该待发布视频'):
+        data.open_candidate_directory('done', opened.append)
 
 
 def test_usage_is_idempotent_and_never_double_counts_subsets(tmp_path):
