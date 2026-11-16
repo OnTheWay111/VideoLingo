@@ -347,7 +347,8 @@ class ChromeSession:
 
     def lookup_public_note(self, title):
         """后台精确标题唯一匹配；只取页面实际公开链接，缺失时不猜测 ID。"""
-        self.call("Page.navigate", {"url": "https://creator.xiaohongshu.com/creator/notes"})
+        self.call("Page.navigate", {"url": "https://creator.xiaohongshu.com/new/note-manager"})
+        self.call("Page.bringToFront")
         deadline = time.monotonic() + min(self.timeout, 30)
         while time.monotonic() < deadline:
             state = self.page_state()
@@ -367,6 +368,12 @@ class ChromeSession:
                             url.startsWith('https://www.xiaohongshu.com/discovery/item/')))];
                         if (urls.length) return {title, urls};
                     }
+                    const cover = container && container.querySelector('.note-card__cover');
+                    if (cover) {
+                        cover.scrollIntoView({block: 'center'});
+                        const r = cover.getBoundingClientRect();
+                        return {title, urls: [], cover: {x: r.x + r.width / 2, y: r.y + r.height / 2}};
+                    }
                     return {title, urls: []};
                 });
             })()""".replace('TITLE', json.dumps(title))) or []
@@ -381,8 +388,42 @@ class ChromeSession:
                     return urls[0]
                 if len(urls) > 1:
                     return ""
+                if candidates[0].get('cover'):
+                    return self.open_public_note(candidates[0]['cover'])
+            if not candidates:
+                self.evaluate("""(() => {
+                    const scroller = document.querySelector('div.content');
+                    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+                })()""")
             time.sleep(1)
         return ""
+
+    def open_public_note(self, position):
+        """读取精确匹配卡片实际打开的公开地址，不从笔记 ID 拼接。"""
+        before = {target['targetId'] for target in
+                  self.call('Target.getTargets').get('targetInfos', [])}
+        for event in ('mousePressed', 'mouseReleased'):
+            self.call('Input.dispatchMouseEvent', {
+                'type': event, 'x': position['x'], 'y': position['y'],
+                'button': 'left', 'clickCount': 1,
+            })
+        deadline = time.monotonic() + min(self.timeout, 10)
+        opened = []
+        try:
+            while time.monotonic() < deadline:
+                opened = [target for target in self.call('Target.getTargets').get('targetInfos', [])
+                          if target['targetId'] not in before and target.get('type') == 'page']
+                if len(opened) > 1:
+                    return ''
+                if len(opened) == 1:
+                    url = public_note_url(opened[0].get('url'))
+                    if url:
+                        return url
+                time.sleep(0.2)
+            return ''
+        finally:
+            for target in opened:
+                self.call('Target.closeTarget', {'targetId': target['targetId']})
 
     def publish_plan(self, out_dir, plan):
         self.publish_clicked = False

@@ -282,3 +282,36 @@ def test_draft_interruption_can_be_resolved_without_deleting_journal(tmp_path, s
     chrome.recover_submission(history)
     assert SubmissionJournal(history.path).read()['status'] == 'recorded'
     assert history.records() == []
+
+
+def test_backend_cover_reads_actual_opened_url(monkeypatch):
+    session = chrome.ChromeSession(timeout=1)
+    calls = []
+    targets = iter([
+        {'targetInfos': [{'targetId': 'manager', 'type': 'page'}]},
+        {'targetInfos': [{'targetId': 'manager', 'type': 'page'},
+                         {'targetId': 'preview', 'type': 'page',
+                          'url': 'https://www.xiaohongshu.com/explore/real?xsec_token=test'}]},
+    ])
+    def call(method, params=None):
+        calls.append((method, params))
+        return next(targets) if method == 'Target.getTargets' else {}
+    session.call = call
+    assert session.open_public_note({'x': 12, 'y': 34}) == 'https://www.xiaohongshu.com/explore/real?xsec_token=test'
+    assert calls[-1] == ('Target.closeTarget', {'targetId': 'preview'})
+    assert [p['type'] for m, p in calls if m == 'Input.dispatchMouseEvent'] == ['mousePressed', 'mouseReleased']
+
+
+def test_backend_cover_rejects_multiple_opened_pages():
+    session = chrome.ChromeSession(timeout=1)
+    calls = []
+    targets = iter([{'targetInfos': []}, {'targetInfos': [
+        {'targetId': 'a', 'type': 'page', 'url': 'https://www.xiaohongshu.com/explore/a'},
+        {'targetId': 'b', 'type': 'page', 'url': 'https://www.xiaohongshu.com/explore/b'},
+    ]}])
+    def call(method, params=None):
+        calls.append((method, params))
+        return next(targets) if method == 'Target.getTargets' else {}
+    session.call = call
+    assert session.open_public_note({'x': 12, 'y': 34}) == ''
+    assert [p['targetId'] for m, p in calls if m == 'Target.closeTarget'] == ['a', 'b']
