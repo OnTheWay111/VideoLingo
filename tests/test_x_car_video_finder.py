@@ -616,7 +616,8 @@ def test_new_series_vehicle_names_survive_car_filter_without_generic_car_word():
     for text in ['Honda Fit Magic Seats', 'N-VAN シートがフラット',
                  'エブリイ車中泊仕様から仕事仕様へ', 'ルーミーの車中泊',
                  'アトレー シート', 'Suzuki Jimny articulation',
-                 'Volvo 850R', 'Stagea 260RS', 'Legnum VR4', 'DeLorean DMC-12']:
+                 'Volvo 850R', 'Stagea 260RS', 'Legnum VR4', 'DeLorean DMC-12',
+                 'Opel GT flip over headlights', 'Alfa Romeo Montreal', 'Volkswagen restoration']:
         tweet = {'id': '1', 'text': text, 'media': [{'type': 'video', 'url': 'https://example.com/v'}]}
         assert finder.normalize(tweet, car_re, [], True) is not None, text
     unrelated = {'id': '2', 'text': 'Folding seats in a home theatre',

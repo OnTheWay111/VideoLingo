@@ -42,6 +42,7 @@ CAR_LEXICON = (
     r"bugatti|bmw|mercedes|amg|audi|rivian|ford|mustang|corvette|gtr|supra|jdm|"
     r"honda|suzuki|daihatsu|toyota|nissan|mitsubishi|volvo|jeep|lexus|xpeng|"
     r"n[ -]?van|n[ -]?box|jimny|stagea|legnum|delorean|"
+    r"opel|alfa\s+romeo|fiat|renault|citro[eë]n|volkswagen|vw|"
     r"rally|offroad|off-road|drift|drag\s?race|car\s?meet|car\s?show|car\s?spotting|"
     r"test\s?drive|first\s?drive|car\s?review|exhaust|horsepower|engine|motorsport|f1)\b"
     r"|エブリイ|アトレー|ルーミー|ホンダ|スズキ|ダイハツ|トヨタ"
