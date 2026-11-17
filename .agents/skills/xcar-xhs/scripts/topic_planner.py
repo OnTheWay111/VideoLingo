@@ -8,7 +8,7 @@ from pathlib import Path
 from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 7
+STRATEGY_VERSION = 8
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -61,6 +61,24 @@ PILLARS = {
                     '("Mitsubishi Legnum VR-4" OR "Nissan Stagea 260RS") (walkaround OR details OR engine)',
                 ),
             },
+            {
+                "id": "regional_production_cars",
+                "label": "各地特有的量产车",
+                "query_groups": (
+                    '("Holden Ute" OR "Holden Maloo" OR "Ford Falcon Ute")',
+                    '("Renault Avantime" OR "Citroën C6" OR "Citroen C6")',
+                    '("Hyundai Pony" OR "Kia Pride" OR "Isuzu VehiCROSS")',
+                ),
+            },
+            {
+                "id": "rally_road_cars",
+                "label": "拉力赛车的公路版",
+                "query_groups": (
+                    '("Peugeot 205 Turbo 16" OR "Audi Sport quattro" OR "Renault 5 Turbo")',
+                    '("Lancia Delta S4 Stradale" OR "Lancia 037 Stradale" OR "Ford RS200 road car")',
+                    '("Toyota Celica GT-Four" OR "Subaru Impreza 22B" OR "Mitsubishi Galant VR-4")',
+                ),
+            },
         ),
     },
     "mechanical_contrast": {
@@ -92,6 +110,9 @@ PILLARS = {
                     '("retractable door" OR "pop up headlights" OR "pop-up headlights") (car OR coupe OR roadster)',
                     '("BMW Z1" door OR "Toyota Sera" doors OR "Saab Aero X" canopy)',
                     '("active aero" OR "active rear wing" OR "retractable spoiler") (car OR supercar OR Porsche)',
+                    '("rear axle steering" OR "rear wheel steering" OR "four-wheel steering") (car OR demo OR "low speed" OR parking)',
+                    '("air suspension" OR "hydropneumatic suspension" OR "axle lift") ("ride height" OR "raises and lowers" OR demonstration)',
+                    '("dog box" OR "sequential gearbox" OR "transfer case") ("gear change" OR "low range" OR "shift linkage") (car OR 4x4 OR rally)',
                 ),
             },
             {

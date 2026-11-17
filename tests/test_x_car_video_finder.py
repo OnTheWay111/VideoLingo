@@ -433,7 +433,7 @@ def test_auto_topic_plan_includes_mountain_driving_series():
 
     plan = topic_planner.build_topic_plan(records)
 
-    assert plan["strategy_version"] == 7
+    assert plan["strategy_version"] == 8
     assert plan["score_rubric"] == {
         "first_three_seconds": 25,
         "knowledge_point": 25,
@@ -448,6 +448,24 @@ def test_auto_topic_plan_includes_mountain_driving_series():
     assert any('"mountain road"' in query for query in plan["queries"])
     assert any('"touge POV"' in query for query in plan["queries"])
     assert all('-"mountain road"' not in query for query in plan["queries"])
+
+
+def test_expanded_rare_car_series_participate_in_inventory_selection():
+    for series_id, phrase in (
+        ("regional_production_cars", '"Holden Ute"'),
+        ("rally_road_cars", '"Peugeot 205 Turbo 16"'),
+    ):
+        queue = [
+            {"status": "queued", "item": {"topic_pillar": pillar_id, "topic_series_id": series["id"]}}
+            for pillar_id, pillar in topic_planner.PILLARS.items()
+            for series in pillar["series"] if series["id"] != series_id
+        ]
+        plan = topic_planner.build_topic_plan([], queue_records=queue)
+
+        assert plan["pillar"] == "rare_models"
+        assert plan["series_id"] == series_id
+        assert any(phrase in query for query in plan["queries"])
+        assert all("filter:media" in query and '-"car show"' in query for query in plan["queries"])
 
 
 def test_auto_topic_plan_is_stable_until_publication_is_recorded():
