@@ -699,3 +699,37 @@ def test_verified_same_batch_mechanism_used_on_resume():
     index = pipeline.recent_mechanisms([], [], now, [item])
     assert pipeline.match_recent_mechanism('Watch the Mercedes EQG do a tank turn', index)['status'] == 'approved'
     assert not pipeline.match_recent_mechanism('Mercedes G Wagon on a trail', index)
+
+
+@pytest.mark.parametrize(('caption', 'expected'), [
+    ('Meet the BMW Z1. Its sliding doors disappear into the sills.', True),
+    ('This car is a BMW Z1. Watch its sliding doors drop.', True),
+    ('今天拍到一辆宝马Z1。它的下滑车门开启。', True),
+    ('这是宝马Z1。它的下滑车门正在打开。', True),
+    ('Check out those sliding doors. These doors belong to the BMW Z1.', True),
+    ('BMW Z1. Another coupe arrives. Its sliding doors open.', False),
+    ('BMW Z1. Toyota Sera. Its sliding doors open.', False),
+    ('BMW Z1: the car that inspired the Model Y. Its sliding doors open.', False),
+    ('BMW Z1. The sliding doors on my new van open.', False),
+    ('BMW Z1. The sliding doors sense you approaching and open automatically.', False),
+    ('BMW Z1. Its sliding doors detect a nearby key.', False),
+    ('BMW Z1 launch. Thousands in the room. Normal doors do not open in that gap. Sliding doors do.', True),
+    ('BMW Z1. Sliding doors do.', False),
+    ('BMW Z1 sliding doors. Another van has the same feature. Which car is this?', False),
+    ('BMW Z1. Would its sliding doors work on a van?', False),
+    ('BMW Z1. Its sliding doors do not work.', False),
+    ('BMW Z1. Its gullwing doors open.', False),
+    ('Look at the gullwing doors and sliding doors. These doors made the BMW Z1 famous.', False),
+    ('BMW Z1 versus a Toyota Sera. Its sliding doors open.', False),
+    ('Is that a BMW Z1? Its sliding doors open.', False),
+    ('宝马Z1和另一台车。它的下滑车门开启。', False),
+])
+def test_cross_sentence_mechanism_requires_clear_ownership(caption, expected):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    history = [dict(source_id='old', brand='BMW', model='Z1', title='Z1下滑车门', published_at=now.isoformat())]
+    result = pipeline.match_recent_mechanism(caption, pipeline.recent_mechanisms(history, [], now))
+    assert bool(result) == expected
+    if result:
+        assert result['match_scope'] == 'cross_sentence'
+        assert 2 <= len(result['evidence_sentences']) <= 4
+        assert result['source_id'] == 'old'
