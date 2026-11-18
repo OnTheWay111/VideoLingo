@@ -52,6 +52,15 @@ CAR_LEXICON = (
     r"|汽车|越野|超跑|跑车|改装车|车展|车评|试驾|赛车|赛道|皮卡|漂移|引擎|马力)"
 )
 
+# 只匹配可识别的车型组合，短数字、通用词不作为别名单独放行。
+MODEL_ALIAS = re.compile(
+    r"(?<![a-z0-9])(?:tatra[ -]?(?:t[ -]?)?603|rs2[ -]?avant|"
+    r"autozam[ -]?az[ -]?1|az[ -]?1|dmc[ -]?12|stagea[ -]?260rs|"
+    r"legnum[ -]?vr[ -]?4|peel[ -]?(?:p50|trident)|eunos[ -]?cosmo|"
+    r"saab aero[ -]?x|mg zt[ -]?t 260|apollo (?:ie|evo)|mazda cosmo|gordon murray t[.]50|mcmurtry sp[ée]irling)(?![a-z0-9])|"
+    r"(?:太脱拉|太脫拉|タトラ)[ -]?603(?![0-9])", re.IGNORECASE
+)
+
 # 提示词里出现这些词时，自动把它拼进检索式（中英映射）
 BRAND_MAP = {
     "特斯拉": "tesla",
@@ -177,7 +186,8 @@ def q(token):
 
 def build_auto_queries(prompt, min_likes, since):
     lower = prompt.lower()
-    models, scenes = [], []
+    models = [match.group() for match in MODEL_ALIAS.finditer(prompt)]
+    scenes = []
     for cn, en in BRAND_MAP.items():
         if cn in prompt:
             models.append(en)
@@ -205,7 +215,7 @@ def build_auto_queries(prompt, min_likes, since):
         if scenes:
             queries.append("%s (%s) filter:media" % (base, " OR ".join(q(s) for s in scenes[:2])))
         else:
-            queries.append("%s (offroad OR POV OR exhaust OR review) filter:media" % base)
+            queries.append("%s filter:media" % base)
     else:
         queries.append('("car" OR "supercar" OR 汽车 OR 越野) filter:media')
 
@@ -214,7 +224,7 @@ def build_auto_queries(prompt, min_likes, since):
     queries.append('("cybertruck" OR "offroad" OR "rally" OR 超跑 OR 越野 OR 改装车) filter:media')
 
     result = []
-    for item in queries:
+    for item in [q.replace('filter:media', 'filter:videos') for q in queries] + queries:
         if min_likes and "min_faves:" not in item:
             item += " min_faves:%d" % min_likes
         if since and "since:" not in item:
@@ -291,7 +301,7 @@ def car_related(tweet, car_re):
         author.get("screen_name") or "",
         author.get("name") or "",
     ])
-    return bool(car_re.search(haystack))
+    return bool(car_re.search(haystack) or MODEL_ALIAS.search(tweet.get("text") or ""))
 
 
 def to_int(value):

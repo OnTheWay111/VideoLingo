@@ -8,7 +8,7 @@ from pathlib import Path
 from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 8
+STRATEGY_VERSION = 9
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -57,6 +57,7 @@ PILLARS = {
                 "label": "少见的原厂性能旅行车",
                 "query_groups": (
                     '("Volvo 850 T-5R" OR "Audi RS2 Avant") (walkaround OR details OR engine)',
+                    '("RS2 Avant" OR "Stagea 260RS" OR "Legnum VR-4" OR "Volvo 850 T-5R")',
                     '("MG ZT-T 260" OR "Subaru Legacy GT-B") (walkaround OR details OR engine)',
                     '("Mitsubishi Legnum VR-4" OR "Nissan Stagea 260RS") (walkaround OR details OR engine)',
                 ),
@@ -68,6 +69,7 @@ PILLARS = {
                     '("Holden Ute" OR "Holden Maloo" OR "Ford Falcon Ute")',
                     '("Renault Avantime" OR "Citroën C6" OR "Citroen C6")',
                     '("Hyundai Pony" OR "Kia Pride" OR "Isuzu VehiCROSS")',
+                    '("Tatra 603" OR Tatra603 OR "Tatra T603" OR "太脱拉603")',
                 ),
             },
             {
@@ -180,6 +182,11 @@ PILLARS = {
 }
 
 
+def series_queries(series):
+    return [f"{group} filter:{kind} {NEGATIVE_FILTERS}"
+            for kind in ("videos", "media") for group in series["query_groups"]]
+
+
 def active_records(records):
     # 历史是事件日志：补链接和状态更正不能重复消耗发布期数。
     latest = {}
@@ -201,22 +208,26 @@ def build_topic_plan(records, queue_records=None, reservations=None):
                      if entry.get("status") in ("queued", "planned")]
         for reservation in reservations or []:
             if reservation.get("status") not in ("complete", "cancelled"):
-                inventory.extend([{"topic_pillar": reservation["plan"]["pillar"],
-                                   "topic_series_id": reservation["plan"]["series_id"]}]
-                                 * reservation.get("target", 3))
+                plan = reservation["plan"]
+                specs = plan.get("series_specs") or [{"pillar": plan["pillar"], "id": plan["series_id"]}]
+                for slot in range(reservation.get("target", 3)):
+                    spec = specs[slot % len(specs)]
+                    inventory.append({"topic_pillar": spec["pillar"], "topic_series_id": spec["id"]})
         counts = {key: sum(item.get("topic_pillar") == key for item in inventory) for key in PILLARS}
         scheduled = pillar_id
         pillar_id = min(PILLARS, key=lambda key: (counts[key] / CONTENT_MIX[key], key != scheduled))
     pillar = PILLARS[pillar_id]
     pillar_records = [record for record in active if record.get("topic_pillar") == pillar_id]
     series_index = (len(pillar_records) // 5) % len(pillar["series"])
+    ranked = [series_index]
     if queue_records is not None:
-        series_index = min(range(len(pillar["series"])), key=lambda index: (
+        ranked = sorted(range(len(pillar["series"])), key=lambda index: (
             sum(item.get("topic_series_id") == pillar["series"][index]["id"] for item in inventory),
             index != series_index))
+        series_index = ranked[0]
     series = pillar["series"][series_index]
     episode = len(pillar_records) % 5 + 1
-    queries = ["%s filter:media %s" % (group, NEGATIVE_FILTERS) for group in series["query_groups"]]
+    queries = series_queries(series)
     recent_titles = [record.get("title") for record in active[-5:] if record.get("title")]
     recent_brands = []
     for record in reversed(active):
@@ -240,6 +251,7 @@ def build_topic_plan(records, queue_records=None, reservations=None):
         "prompt": "自动选题｜%s｜%s｜第 %d 期；推荐成片时长 %s 秒" % (
             pillar["label"], series["label"], episode, pillar["duration"]),
         "queries": queries,
+        "refill_series": [pillar["series"][i]["id"] for i in ranked[:3]],
         "score_threshold": SCORE_THRESHOLD,
         "score_rubric": SCORE_RUBRIC,
         "source_engagement": "weak_reference_only",

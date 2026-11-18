@@ -540,3 +540,27 @@ def test_missing_media_can_be_explicitly_redownloaded_and_reviewed(tmp_path):
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'awaiting_review', result
     assert backend.downloads.count('1') == 2
+
+
+def test_mixed_refill_keeps_origin_through_review_and_queue(tmp_path):
+    args = args_for(tmp_path, series='regional_production_cars,rally_road_cars,car_mechanisms')
+    backend = FakeBackend([([tweet(i)], None) for i in range(1, 4)])
+    expected = args.series.split(',')
+    for series in expected:
+        receipt = pipeline.run_pipeline(args, backend)
+        assert receipt['status'] == 'awaiting_review'
+        request = json.loads(Path(receipt['review_request']).read_text())
+        assert [row['series_id'] for row in request['items'].values()] == [series]
+        args.review_file = review_all(args.out)
+    assert pipeline.run_pipeline(args, backend)['enqueue']['added'] == 3
+    assert all('filter:videos' in query for query, _, _ in backend.searches)
+    entries = publication_queue.PublicationQueue(history_path=args.publish_history).records()
+    assert {e['item']['topic_series_id'] for e in entries} == set(expected)
+
+
+def test_model_only_text_accepts_specific_aliases():
+    finder = pipeline.finder
+    for text, expected in [('Tatra603', True), ('太脱拉603的发动机', True),
+                           ('AZ-1', True), ('Berlin Fashion 603', False), ('Tatra6030', False)]:
+        row = dict(tweet('123'), text=text, author={})
+        assert finder.car_related(row, pipeline.re.compile(finder.CAR_LEXICON)) is expected

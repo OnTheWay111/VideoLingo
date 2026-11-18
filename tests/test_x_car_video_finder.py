@@ -433,7 +433,7 @@ def test_auto_topic_plan_includes_mountain_driving_series():
 
     plan = topic_planner.build_topic_plan(records)
 
-    assert plan["strategy_version"] == 8
+    assert plan["strategy_version"] == 9
     assert plan["score_rubric"] == {
         "first_three_seconds": 25,
         "knowledge_point": 25,
@@ -465,7 +465,9 @@ def test_expanded_rare_car_series_participate_in_inventory_selection():
         assert plan["pillar"] == "rare_models"
         assert plan["series_id"] == series_id
         assert any(phrase in query for query in plan["queries"])
-        assert all("filter:media" in query and '-"car show"' in query for query in plan["queries"])
+        assert plan["queries"][0].count("filter:videos") == 1
+        assert "filter:media" in plan["queries"][-1]
+        assert all('-"car show"' in query for query in plan["queries"])
 
 
 def test_auto_topic_plan_is_stable_until_publication_is_recorded():
@@ -520,7 +522,8 @@ def test_auto_topic_main_runs_without_prompt_and_saves_plan(tmp_path, monkeypatc
     assert saved_plan["pillar"] == "rare_models"
     assert saved_plan["series_episode"] == 1
     assert manifest["queries"] == searched
-    assert len(searched) == 3
+    assert len(searched) == 6
+    assert all("filter:videos" in query for query in searched[:3])
     assert all("min_faves:5" in query and "since:2026-11-01" in query for query in searched)
     assert "20 条轮动的第 1 位" in (out / "REPORT.md").read_text()
 

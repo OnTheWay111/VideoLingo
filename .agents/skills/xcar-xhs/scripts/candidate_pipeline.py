@@ -9,6 +9,7 @@ import sys
 import subprocess
 import time
 import uuid
+from itertools import zip_longest
 from pathlib import Path
 
 import finder
@@ -20,7 +21,7 @@ from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
 from monitor_telemetry import record_event
-from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS
+from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries
 from topic_policy import forbidden_topic_match
 from xiaohongshu_publisher import latest_records, validate_content
 
@@ -70,8 +71,7 @@ def series_lookup(series_id):
                 return {'id': series['id'], 'label': series['label'],
                         'pillar': pillar_id, 'pillar_label': pillar['label'],
                         'duration': pillar['duration'],
-                        'queries': ['%s filter:media %s' % (group, NEGATIVE_FILTERS)
-                                    for group in series['query_groups']]}
+                        'queries': series_queries(series)}
     return None
 
 
@@ -94,12 +94,13 @@ def apply_series_override(plan, series_ids):
     if not specs:
         raise ValueError('--series 不能为空')
     pillars = {spec['pillar'] for spec in specs}
-    queries, query_series = [], {}
-    for spec in specs:
-        for query in spec['queries']:
-            if query not in query_series:
-                queries.append(query)
-                query_series[query] = spec['id']
+    # 先轮流取各系列的第一组词，再取第二组，避免小预算被首个系列用尽。
+    query_series = {}
+    for row in zip_longest(*(spec['queries'] for spec in specs)):
+        for spec, query in zip(specs, row):
+            if query:
+                query_series.setdefault(query, spec['id'])
+    queries = sorted(query_series, key=lambda query: 'filter:videos' not in query)
     if len(specs) == 1:
         spec = specs[0]
         plan.update(pillar=spec['pillar'], pillar_label=spec['pillar_label'],
@@ -152,6 +153,7 @@ def review_request(state, out):
             continue
         item = entry['item']
         requests[source_id] = {
+            'series_id': entry.get('series_id') or state['plan']['series_id'],
             'source': item['candidate'], 'video': item['video'], 'frames': item['frames'],
             'video_sha256': entry['video_sha256'],
             'decision': 'pending', 'reason': '',
@@ -306,8 +308,11 @@ def run_pipeline(args, backend=None):
             plan = build_topic_plan(history.records(), queue.records(), list(registry['jobs'].values()))
             plan['series_episode'] = None  # 发布期数由发布计划分配。
             plan['prompt'] = '自动选题｜%s｜%s｜候选生产' % (plan['pillar_label'], plan['series_label'])
-            if getattr(args, 'series', None):
-                plan = apply_series_override(plan, args.series)
+            selected = getattr(args, 'series', None)
+            if not selected and not args.query and args.top > 1:
+                selected = ','.join(plan['refill_series'][:args.top])
+            if selected:
+                plan = apply_series_override(plan, selected)
             state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
                      'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,
@@ -326,7 +331,7 @@ def run_pipeline(args, backend=None):
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
                 state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False,
-                                         'series_id': state['plan'].get('series_id')})
+                                         'series_id': state['plan']['series_id'].split('+')[0]})
 
         def checkpoint():
             state['updated_at'] = now()

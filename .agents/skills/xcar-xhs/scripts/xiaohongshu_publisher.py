@@ -133,7 +133,7 @@ def prepare_item(item, topic_plan):
         "topic_strategy_version": topic_plan.get("strategy_version") or "",
     }
     for key, value in values.items():
-        if value not in ("", None):
+        if value not in ("", None) and not item.get(key):
             item[key] = value
     return item
 

@@ -88,6 +88,8 @@ python3 .agents/skills/xcar-xhs/scripts/candidate_pipeline.py \
   --out work/xcar-candidates-本次任务名
 ```
 
+常规自动补池按库存挑选同栏目最多三个系列，交替搜索各系列的视频词组，再用媒体混排补充。用 `--series regional_production_cars,rally_road_cars,car_mechanisms` 可指定跨栏目组合，单个 ID 可锁定单系列。每条审核请求和入池素材保留实际检索系列；组合任务手工追加的 `--query` 归属第一个系列。只指定补充词的新任务沿用单系列。已开始的任务恢复原有查询和游标。文字初筛接受具体车型和可靠别名（如 Tatra 603、Tatra603、太脱拉603），仍须通过互动、画面、评分和去重核验。
+
 新任务使用新目录；同一目录再次运行即恢复。脚本输出 `awaiting_review`（退出码 3）时，Agent 读取 `review_request.json`、查看真实视频/抽帧并核实事实，将逐条审核与文案保存为 `review.json`，随后继续：
 
 ```bash
