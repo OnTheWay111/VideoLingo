@@ -633,3 +633,69 @@ def test_model_only_text_accepts_specific_aliases():
                            ('AZ-1', True), ('Berlin Fashion 603', False), ('Tatra6030', False)]:
         row = dict(tweet('123'), text=text, author={})
         assert finder.car_related(row, pipeline.re.compile(finder.CAR_LEXICON)) is expected
+
+
+def test_recent_mechanism_skips_before_download_with_auditable_match(tmp_path):
+    args = args_for(tmp_path, series='car_mechanisms', max_pages=1)
+    recent = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    record = dict(source_id='old', brand='Tesla', model='Model X', title='鹰翼门窄位开启',
+                  status='published', published_at=recent)
+    Path(args.publish_history).write_text(json.dumps(record) + '\n')
+    captions = ['Model X Falcon Wing doors opening', 'Tesla Model X opens its trunk',
+                'These Falcon Wing doors on a car are amazing', 'BMW Z10 sliding doors']
+    posts = [dict(tweet(i), text='Car: ' + caption) for i, caption in enumerate(captions, 1)]
+    backend = FakeBackend([(posts, None)])
+    result = pipeline.run_pipeline(args, backend)
+    assert result['recent_mechanism_skipped'] == 1
+    assert result['downloads_attempted'] == 3
+    assert backend.downloads == backend.frame_calls == ['2', '3', '4']
+    state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
+    assert state['items']['1']['recent_duplicate']['source_id'] == 'old'
+    assert state['items']['1']['recent_duplicate']['mechanism'] == '鹰翼门'
+    assert not (Path(args.out) / 'videos/1.mp4').exists()
+
+
+def test_recent_mechanism_time_status_and_text_boundaries():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=30)
+    item = dict(brand='BMW', model='Z1', title='Z1下滑车门')
+    row = dict(source_id='old', item=item, status='queued', enqueued_at=cutoff.isoformat())
+    index = pipeline.recent_mechanisms([], [row], now)
+    match = pipeline.match_recent_mechanism
+    assert match('宝马Z1的车门下沉', index)['source_id'] == 'old'
+    assert match('The sliding doors of the BMW Z1', index)
+    for caption in ('BMW Z10 sliding doors', 'BMW Z1 headlights', 'Z1 sliding doors',
+                    'BMW Z1. This van has sliding doors', 'BMW Z1 without sliding doors',
+                    'Car with sliding doors https://example.com/BMW-Z1', '#BMWZ1 sliding doors',
+                    'BMW Z1 vs a van with sliding doors', 'BMW Z1 and a van with sliding doors',
+                    "BMW Z1 doesn't have sliding doors", 'BMW Z1 beside a van with sliding doors'):
+        assert not match(caption, index)
+    for update in (dict(enqueued_at=(cutoff - datetime.timedelta(seconds=1)).isoformat()),
+                   dict(enqueued_at='unknown'), dict(status='withdrawn')):
+        assert not pipeline.recent_mechanisms([], [{**row, **update}], now)
+    history = dict(item, source_id='old', published_at=now.isoformat(), status='unconfirmed')
+    assert pipeline.recent_mechanisms([history], [], now)
+    assert not pipeline.recent_mechanisms([history, {**history, 'status': 'failed'}], [], now)
+
+
+@pytest.mark.parametrize('brand,model,title,caption', [
+    ('Citroën', 'DS', '可拆后翼子板', 'Removing the rear fender on the Citroen DS'),
+    ('Mercedes-Benz', '300 SL Coupé', '300 SL 鸥翼门', 'Mercedes 300 SL Gullwing doors opening'),
+    ('Rolls-Royce', 'Ghost', '古思特车门里怎么弹出雨伞', 'Rolls Royce Ghost door umbrella'),
+])
+def test_recent_queue_recognizes_bilingual_model_and_mechanism(brand, model, title, caption):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    row = dict(source_id='queued', status='queued', enqueued_at=now.isoformat(),
+               item=dict(brand=brand, model=model, title=title))
+    index = pipeline.recent_mechanisms([], [row], now)
+    assert pipeline.match_recent_mechanism(caption, index)['source_id'] == 'queued'
+    assert not pipeline.match_recent_mechanism(brand + ' ' + model + ' driving', index)
+
+
+def test_verified_same_batch_mechanism_used_on_resume():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    item = {'candidate': {'id': 'reviewed'}, 'brand': 'Mercedes-Benz', 'model': 'G-Class electric prototype',
+            'title': '电动G级原地掉头', 'verification': {'reviewed_at': now.isoformat()}}
+    index = pipeline.recent_mechanisms([], [], now, [item])
+    assert pipeline.match_recent_mechanism('Watch the Mercedes EQG do a tank turn', index)['status'] == 'approved'
+    assert not pipeline.match_recent_mechanism('Mercedes G Wagon on a trail', index)

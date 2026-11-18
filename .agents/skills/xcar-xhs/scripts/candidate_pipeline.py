@@ -21,6 +21,7 @@ from finalize import apply_publish_content, finalize, load_publish, recover_fina
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
+from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries
 from topic_policy import forbidden_topic_match
@@ -282,7 +283,9 @@ def write_manifest(state, out, history):
                 'file_topic': source_id, 'topics': ['#汽车', '#素材核验']}
     manifest = {'schema_version': 2, 'minimum_selected': state.get('min_selected', 3), 'selection_target': state['target'],
                 'selection_complete': False, 'topic_plan': state['plan'],
-                'publish_history_file': str(history.path), 'downloads': selected, 'rejected': rejected}
+                'publish_history_file': str(history.path), 'downloads': selected, 'rejected': rejected,
+                'recent_mechanism_skipped': [{'source_id': key, 'match': entry['recent_duplicate']}
+                                             for key, entry in state['items'].items() if 'recent_duplicate' in entry]}
     atomic_json(out / 'manifest.json', manifest)
     atomic_json(out / 'publish.json', content)
 
@@ -369,6 +372,7 @@ def run_pipeline(args, backend=None):
                       'rejected': sum(e['status'] == 'rejected' for e in state['items'].values()),
                       'retryable_failed': sum(e['status'] in ('download_failed', 'frame_failed') for e in state['items'].values()),
                       'pages_used': state['pages'], 'downloads_attempted': state['downloads'],
+                      'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
                       'error': error, 'enqueue': state.get('enqueue')}
             atomic_json(out / 'candidate_receipt.json', result)
@@ -437,13 +441,16 @@ def run_pipeline(args, backend=None):
                     return finish('budget_exhausted', '本次执行时间预算已耗尽，保留进度')
                 args.operation_timeout = max(1, int(deadline - time.monotonic()))
                 # 下载前重新核对历史、队列和其他任务预约。
-                occupied = {e['source_id'] for e in queue.records()}
+                queued = queue.records()
+                occupied = {e['source_id'] for e in queued}
                 for job_id, job in registry['jobs'].items():
                     if job_id != state['job_id'] and job['status'] not in ('complete', 'cancelled'):
                         occupied.update(job.get('source_ids', []))
                 candidates = [e for e in state['items'].values() if e['status'] in ('discovered', 'downloaded')]
                 candidates.sort(key=lambda e: -finder.to_int(e['item']['candidate'].get(args.sort)))
                 if candidates:
+                    recent = recent_mechanisms(history.records(), queued,
+                                               datetime.datetime.now(datetime.timezone.utc), approved)
                     # 每次准备补足目标所需的审核任务，然后交给 Agent。
                     pending = 0
                     for entry in candidates:
@@ -466,6 +473,13 @@ def run_pipeline(args, backend=None):
                             checkpoint()
                             continue
                         if entry['status'] == 'discovered':
+                            match = match_recent_mechanism(item['candidate'].get('text', ''), recent)
+                            if match:
+                                entry.update(status='skipped', recent_duplicate=match,
+                                             reason='下载前命中近 30 天同车型同机构：%s %s · %s' %
+                                                    (match['brand'], match['model'], match['mechanism']))
+                                checkpoint()
+                                continue
                             if state['downloads'] >= args.max_downloads:
                                 return finish('budget_exhausted', '累计下载尝试预算耗尽；可提高 --max-downloads 后恢复')
                             state['downloads'] += 1

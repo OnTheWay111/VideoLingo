@@ -35,6 +35,8 @@ from publish_history import PublishedHistory, default_history_path
 from content_policy import MIN_TOTAL_ENGAGEMENT, engagement_rejection_reason, engagement_total
 from topic_planner import build_topic_plan
 from topic_policy import partition_forbidden_topics
+from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
+from publication_queue import PublicationQueue
 
 # 汽车内容关键词：用于剔除“标题党/非汽车”的媒体推文
 CAR_LEXICON = (
@@ -831,6 +833,18 @@ def main():
     topic_skipped = []
     if args.xiaohongshu:
         ranked, topic_skipped = partition_forbidden_topics(ranked)
+        recent = recent_mechanisms(history.records(), PublicationQueue(history_path=history.path).records(),
+                                   datetime.datetime.now(datetime.timezone.utc))
+        fresh = []
+        for candidate in ranked:
+            match = match_recent_mechanism(candidate.get('text', ''), recent)
+            if match:
+                topic_skipped.append({'candidate': candidate, 'match': match,
+                                      'reason': '近 30 天同车型同机构：%s %s · %s' %
+                                                (match['brand'], match['model'], match['mechanism'])})
+            else:
+                fresh.append(candidate)
+        ranked = fresh
     for index, item in enumerate(ranked, 1):
         item["rank"] = index
     for item in publish_skipped:
@@ -838,7 +852,7 @@ def main():
     for item in engagement_skipped:
         log("互动不足，下载前跳过 %s" % item["candidate"]["url"])
     for item in topic_skipped:
-        log("小红书禁选，下载前跳过 %s" % item["candidate"]["url"])
+        log("小红书题材过滤，下载前跳过 %s" % item["candidate"]["url"])
 
     print()
     print("## 未发布候选（按 %s 弱参考排序，最终由核验评分决定）" % SORT_LABELS[args.sort])
