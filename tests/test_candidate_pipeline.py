@@ -338,6 +338,29 @@ def test_missing_review_cannot_enqueue_and_no_plan_created(tmp_path):
     assert queue.records() == []
 
 
+def test_finalization_recovers_two_reposts_sharing_one_download(tmp_path):
+    source = tmp_path / 'shared.mp4'
+    first = tmp_path / '.finalize-0.tmp'
+    first.write_bytes(b'shared video')
+    digest = candidate_review.file_digest(first)
+    targets = [tmp_path / 'rejected' / name for name in ('first.mp4', 'second.mp4')]
+    transaction = tmp_path / 'finalize_transaction.json'
+    transaction.write_text(json.dumps({
+        'status': 'pending', 'manifest': {'downloads': [], 'rejected': []},
+        'operations': [
+            {'source': str(source), 'sha256': digest, 'target': str(target),
+             'temporary': str(tmp_path / ('.finalize-%d.tmp' % index))}
+            for index, target in enumerate(targets)
+        ],
+    }))
+
+    finalize.recover_finalization(tmp_path)
+
+    assert [p.read_bytes() for p in targets] == [b'shared video', b'shared video']
+    assert json.loads(transaction.read_text())['status'] == 'complete'
+    assert not first.exists()
+
+
 def test_finalization_recovers_after_first_rename(tmp_path, monkeypatch):
     args = args_for(tmp_path)
     backend = FakeBackend()

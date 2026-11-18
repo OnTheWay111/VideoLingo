@@ -6,6 +6,7 @@ import hashlib
 import datetime
 import json
 import re
+import shutil
 from pathlib import Path
 
 from content_policy import (
@@ -346,8 +347,11 @@ def recover_finalization(out_dir):
     if transaction['status'] == 'complete':
         return None
     # 先暂存全部文件，再完成目标命名；每步可依据哈希恢复。
+    staged = {}
     for operation in transaction['operations']:
         source, temporary, target = (Path(operation[key]) for key in ('source', 'temporary', 'target'))
+        digest = operation['sha256']
+        media_key = (source, digest)
         if temporary.exists():
             candidate = temporary
         elif source.exists():
@@ -355,11 +359,21 @@ def recover_finalization(out_dir):
         elif target.exists():
             candidate = target
         else:
-            raise ValueError('定稿恢复缺少媒体：' + str(source))
-        if file_digest(candidate) != operation['sha256']:
+            candidate = staged.get(media_key)
+            if candidate is None:
+                raise ValueError('定稿恢复缺少媒体：' + str(source))
+        if file_digest(candidate) != digest:
             raise ValueError('定稿恢复媒体内容已变化：' + str(candidate))
         if candidate == source:
             source.rename(temporary)
+            candidate = temporary
+        elif candidate not in (temporary, target):
+            # 多个转帖可能引用同一下载文件。为后续审计项保留独立副本。
+            copying = temporary.with_suffix('.copying')
+            shutil.copyfile(candidate, copying)
+            copying.replace(temporary)
+            candidate = temporary
+        staged[media_key] = candidate
     for operation in transaction['operations']:
         temporary, target = Path(operation['temporary']), Path(operation['target'])
         if temporary.exists():
