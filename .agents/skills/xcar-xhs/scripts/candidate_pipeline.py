@@ -20,6 +20,7 @@ from content_policy import SCORE_THRESHOLD, content_duplicate, content_identity,
 from finalize import apply_publish_content, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
+from query_schedule import prior_query_yield, search_text, select_query
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
@@ -332,7 +333,7 @@ def run_pipeline(args, backend=None):
             if selected:
                 plan = apply_series_override(plan, selected)
             plan['editorial_review_version'] = EDITORIAL_REVIEW_VERSION
-            state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
+            state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'limit', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
                      'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,
                                                   'series_id': (plan.get('query_series') or {}).get(q)
@@ -381,6 +382,8 @@ def run_pipeline(args, backend=None):
             atomic_json(out / 'candidate_receipt.json', result)
             return result
 
+        if not args.cancel and state['status'] not in ('complete', 'cancelled') and 'query_yield' not in state:
+            state['query_yield'] = prior_query_yield(registry['jobs'].values(), state)
         checkpoint()
         if args.cancel:
             return finish('cancelled')
@@ -532,20 +535,15 @@ def run_pipeline(args, backend=None):
                     if pending:
                         return finish('awaiting_review')
                     continue
-                available = [q for q in state['queries'] if not q['done']]
-                if not available:
+                query = select_query(state['queries'], state['query_yield'], state['items'])
+                if query is None:
                     return finish('exhausted', '同系列检索已耗尽；可添加 --query 继续，不能降低核验标准')
                 if state['pages'] >= args.max_pages:
                     return finish('budget_exhausted', '累计搜索页预算耗尽；可提高 --max-pages 后恢复')
-                query = min(available, key=lambda q: q['pages'])
                 state['pages'] += 1
                 checkpoint()
-                search_text = query['query']
-                if args.min_likes and 'min_faves:' not in search_text:
-                    search_text += ' min_faves:%d' % args.min_likes
-                if args.since and 'since:' not in search_text:
-                    search_text += ' since:' + args.since
-                tweets, cursor = backend.search(search_text, query['cursor'], query['pages'] + 1, out)
+                tweets, cursor = backend.search(search_text(query['query'], vars(args)),
+                                                query['cursor'], query['pages'] + 1, out)
                 record_event('candidate', 'search_filter', state['job_id'],
                              event_id='%s:search:%d' % (state['job_id'], state['pages']),
                              details={'result_count': len(tweets), 'query_page': query['pages'] + 1},
@@ -553,6 +551,7 @@ def run_pipeline(args, backend=None):
                 previous = query['cursor']
                 query.update(cursor=cursor, pages=query['pages'] + 1,
                              done=not tweets or not cursor or cursor == previous)
+                sources = query.setdefault('page_sources', {})[str(query['pages'])] = []
                 for tweet in tweets:
                     if not tweet.get("id"):
                         continue
@@ -573,6 +572,8 @@ def run_pipeline(args, backend=None):
                                                   'reason': reason,
                                                   'series_id': query.get('series_id') or state['plan'].get('series_id'),
                                                   'item': {'candidate': candidate}}
+                    if not reason:
+                        sources.append(source_id)
                 checkpoint()
             state['status'] = 'finalizing'
             state['phase'] = 'finalizing'

@@ -269,6 +269,72 @@ def test_cursor_and_page_budget_resume(tmp_path):
     assert backend.downloads == ['1', '2', '3']
 
 
+def test_search_prioritizes_productive_cursor_and_stops_after_repeated_page(tmp_path):
+    args = args_for(tmp_path, series='car_mechanisms', max_pages=3)
+    backend = FakeBackend([
+        ([tweet(1)], 'first-cursor'),
+        ([tweet(1)], 'repeated-page-cursor'),
+        ([tweet(2), tweet(3)], None),
+    ])
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    args.review_file = review_all(args.out)
+    assert pipeline.run_pipeline(args, backend)['downloads_attempted'] == 3
+    first, second, third = backend.searches
+    assert first[2] == 1
+    assert second == (first[0], 'first-cursor', 2)
+    assert third[0] != first[0] and third[1:] == (None, 1)
+    assert backend.downloads == ['1', '2', '3']
+    args.review_file = review_all(args.out)
+    assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
+    assert len(backend.searches) == 3
+
+
+def test_search_learns_from_compatible_prior_batches_and_keeps_dry_queries_as_fallback(tmp_path):
+    import hashlib
+
+    series = 'car_mechanisms'
+    dry = {'query': 'dry', 'series_id': series, 'pages': 1, 'done': True}
+    useful = {'query': 'useful', 'series_id': series, 'pages': 1, 'done': True}
+    current = {'job_id': 'current', 'created_at': '2026-11-18T12:00:00+00:00',
+               'settings': {'type': 'top'}, 'plan': {'series_id': series}}
+    invalid = {'query': 'bad archive', 'series_id': series, 'pages': 1, 'done': True}
+
+    def archived(name, updated, mode='top', observed=True):
+        root = tmp_path / name
+        raw = root / 'raw'
+        raw.mkdir(parents=True)
+        observations = {'dry': '', 'useful': json.dumps(tweet(1)) + '\n', 'bad archive': 'broken\n'}
+        for query, contents in observations.items():
+            key = hashlib.sha256(query.encode()).hexdigest()[:16]
+            (raw / (key + '_page1.jsonl')).write_text(contents)
+        queries = [dry, useful, invalid]
+        if observed:
+            queries = [dict(dry, page_sources={'1': ['old']}),
+                       dict(useful, page_sources={'1': ['1']}), invalid]
+        return {'status': 'complete', 'updated_at': updated, 'out_dir': str(root), 'checkpoint': {
+            'job_id': name, 'queries': queries, 'items': {'1': {'status': 'approved'}, 'old': {'status': 'skipped'}},
+            'plan': current['plan'], 'settings': {'type': mode}}}
+
+    jobs = [
+        archived('expired', '2026-11-17T10:00:00+00:00'),
+        archived('first', '2026-11-18T10:00:00+00:00', observed=False),
+        archived('second', '2026-11-18T11:00:00+00:00'),
+        archived('different_mode', '2026-11-18T11:30:00+00:00', mode='latest'),
+        archived('future', '2026-11-18T12:01:00+00:00'),
+    ]
+    history = pipeline.prior_query_yield(jobs, current)
+    assert history == {
+        'car_mechanisms\ndry': {'samples': 2, 'candidates': 0, 'dry_streak': 2},
+        'car_mechanisms\nuseful': {'samples': 2, 'candidates': 2, 'dry_streak': 0},
+    }
+    fresh = [dict(query, pages=0, done=False) for query in (dry, dict(dry, query='untested'), useful)]
+    assert pipeline.select_query(fresh, history, {})['query'] == 'useful'
+    fresh[2]['done'] = True
+    assert pipeline.select_query(fresh, history, {})['query'] == 'untested'
+    fresh[1]['done'] = True
+    assert pipeline.select_query(fresh, history, {})['query'] == 'dry'
+
+
 def test_failed_download_requires_explicit_retry(tmp_path):
     args = args_for(tmp_path, max_pages=1)
     backend = FakeBackend([([tweet(1)], None)])
