@@ -21,7 +21,7 @@ from content_policy import (
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publish_history import ACTIVE_STATUSES, PublishedHistory, locked_history
 from publication_runtime import atomic_json
-from candidate_review import validate_review, file_digest
+from candidate_review import candidate_sort_key, validate_review, file_digest
 from topic_policy import explainer_video_match
 
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
@@ -207,7 +207,7 @@ def apply_publish_content(items, publish):
 def reject_duplicate_downloads(manifest, history_records, queue_records):
     downloads = sorted(
         manifest.get("downloads", []),
-        key=lambda item: -float(item.get("score") or 0),
+        key=candidate_sort_key,
     )
     current_ids = {str(item["candidate"]["id"]) for item in downloads}
     history_records = [record for record in history_records

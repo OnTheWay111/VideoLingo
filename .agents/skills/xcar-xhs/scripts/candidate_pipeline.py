@@ -14,8 +14,9 @@ from pathlib import Path
 
 import finder
 from candidate_pool import enqueue_finalized
-from candidate_review import content_digest, file_digest, validate_review
-from content_policy import content_duplicate, content_identity, normalize_brand
+from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
+                              content_digest, file_digest, validate_editorial_review)
+from content_policy import SCORE_THRESHOLD, content_duplicate, content_identity, normalize_brand
 from finalize import apply_publish_content, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
@@ -166,6 +167,10 @@ def review_request(state, out):
                              'fact_evidence': '',
                              'series_evidence': '', 'score_reasons': {}},
         }
+        if state['plan'].get('editorial_review_version'):
+            requests[source_id]['verification']['editorial'] = {
+                'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
+            }
     atomic_json(out / 'review_request.json', {'job_id': state['job_id'], 'topic_plan': state['plan'],
                                              'items': requests})
     return requests
@@ -203,10 +208,22 @@ def apply_reviews(state, path, out, registry):
         apply_publish_content([approved], content)
         approved['verification'] = {**result.get('verification', {}), 'status': 'approved',
                                     'video_sha256': result['video_sha256']}
+        item_series = entry.get('series_id') or state['plan'].get('series_id')
+        approved.update(topic_pillar=series_pillar(item_series) or state['plan']['pillar'],
+                        topic_series_id=item_series,
+                        topic_strategy_version=state['plan']['strategy_version'], candidate_job_id=state['job_id'])
         approved['verification']['content_sha256'] = content_digest(approved)
         forbidden = forbidden_topic_match(approved)
-        if forbidden or approved.get('score', 0) < 70:
-            reason = '禁选内容：' + forbidden if forbidden else '核验评分低于 70'
+        reason = ''
+        if forbidden:
+            reason = '禁选内容：' + forbidden
+        elif approved.get('score', 0) < SCORE_THRESHOLD:
+            reason = '核验评分低于 %d' % SCORE_THRESHOLD
+        elif state['plan'].get('editorial_review_version'):
+            editorial = validate_editorial_review(approved)
+            if item_series == ACTION_SERIES and editorial['opening_action_at_sec'] is None:
+                reason = '汽车机关图鉴前 3 秒未见关键动作'
+        if reason:
             entry.update(status='rejected', reason=reason, item=approved, publish=content[source_id])
             registry['rejected'][source_id] = {'reason': reason, 'at': now()}
             record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
@@ -215,10 +232,6 @@ def apply_reviews(state, path, out, registry):
                          path=Path(state['history_file']).with_name('monitor_events.jsonl'))
             continue
         validate_content(approved)
-        item_series = entry.get('series_id') or state['plan'].get('series_id')
-        approved.update(topic_pillar=series_pillar(item_series) or state['plan']['pillar'],
-                        topic_series_id=item_series,
-                        topic_strategy_version=state['plan']['strategy_version'], candidate_job_id=state['job_id'])
         entry.update(status='approved', item=approved, publish=content[source_id])
         record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
                      status='approved', event_id='%s:%s:review' % (state['job_id'], source_id),
@@ -231,7 +244,7 @@ def reconcile_approved(state, history, queue):
     accepted, brands = [], set()
     records, queued = latest_records(history.records()), queue.records()
     approved = sorted((e for e in state['items'].values() if e['status'] == 'approved'),
-                      key=lambda e: -e['item']['score'])
+                      key=lambda e: candidate_sort_key(e['item']))
     for entry in approved:
         item = entry['item']
         source_id = str(item['candidate']['id'])
@@ -313,6 +326,7 @@ def run_pipeline(args, backend=None):
                 selected = ','.join(plan['refill_series'][:args.top])
             if selected:
                 plan = apply_series_override(plan, selected)
+            plan['editorial_review_version'] = EDITORIAL_REVIEW_VERSION
             state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
                      'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,

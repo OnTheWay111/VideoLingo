@@ -1,11 +1,16 @@
 """候选入池门禁：审核结论绑定媒体及文案，脚本不伪造内容判断。"""
-import hashlib
 import datetime
+import hashlib
 import json
+import math
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from content_policy import SCORE_RUBRIC
+
+EDITORIAL_REVIEW_VERSION = 1
+OPENING_ACTION_SECONDS = 3
+ACTION_SERIES = 'car_mechanisms'
 
 COPY_FIELDS = ('title', 'recommendation', 'brand', 'model', 'modification_project',
                'title_detail', 'verifiable_fact', 'fact_source', 'discussion_question',
@@ -23,7 +28,34 @@ def file_digest(path):
 def content_digest(item):
     values = {key: item.get(key) or ({} if key == 'score_breakdown' else [] if key == 'topics' else '')
               for key in COPY_FIELDS}
+    editorial = (item.get('verification') or {}).get('editorial')
+    if editorial is not None:
+        values['editorial'] = editorial
     return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def validate_editorial_review(item):
+    editorial = (item.get('verification') or {}).get('editorial')
+    if not isinstance(editorial, dict) or 'opening_action_at_sec' not in editorial:
+        raise ValueError('选材审核缺少 editorial.opening_action_at_sec')
+    at_sec = editorial['opening_action_at_sec']
+    duration = (item.get('video') or {}).get('duration')
+    if at_sec is not None and (
+        type(at_sec) not in (int, float) or not math.isfinite(at_sec)
+        or not 0 <= at_sec <= OPENING_ACTION_SECONDS or (duration and at_sec >= duration)
+    ):
+        raise ValueError('opening_action_at_sec 必须是前 3 秒内的有效时间点，或 null')
+    for field in ('discussion_basis', 'follow_up_topic'):
+        if not isinstance(editorial.get(field), str) or not editorial[field].strip():
+            raise ValueError('选材审核缺少 editorial.' + field)
+    return editorial
+
+
+def candidate_sort_key(item):
+    """先比较可见动作和讨论价值，再比较总分，兼容既有候选。"""
+    editorial = (item.get('verification') or {}).get('editorial') or {}
+    discussion_score = (item.get('score_breakdown') or {}).get('discussion_question', 0) if editorial else 0
+    return (editorial.get('opening_action_at_sec') is None, -discussion_score, -float(item.get('score') or 0))
 
 
 def validate_review(item, check_digest=True, require_rights=False):
@@ -52,6 +84,10 @@ def validate_review(item, check_digest=True, require_rights=False):
     if not isinstance(reasons, dict) or set(reasons) != set(SCORE_RUBRIC) or not all(
             isinstance(value, str) and value.strip() for value in reasons.values()):
         raise ValueError('五项评分必须逐项填写理由')
+    if 'editorial' in review:
+        editorial = validate_editorial_review(item)
+        if item.get('topic_series_id') == ACTION_SERIES and editorial['opening_action_at_sec'] is None:
+            raise ValueError('汽车机关图鉴须在前 3 秒看见关键动作')
     frames = item.get('frames') or []
     if not any(0 <= frame.get('at_sec', -1) <= 3 and Path(frame['file']).is_file() for frame in frames):
         raise ValueError('缺少前三秒有效抽帧')

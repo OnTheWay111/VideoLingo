@@ -114,6 +114,12 @@ def review_all(out, reject=()):
         item = {'candidate': {'id': source_id}, 'video': result['video'], 'title': content['title']}
         proof = approve_item(item)['verification']
         proof.pop('content_sha256')
+        if 'editorial' in result['verification']:
+            proof['editorial'] = {
+                'opening_action_at_sec': 0.5,
+                'discussion_basis': '窄车位打开车门的空间取舍',
+                'follow_up_topic': 'Toyota Sera 蝴蝶门的开启空间',
+            }
         result['verification'] = proof
     path = Path(out) / 'review.json'
     path.write_text(json.dumps(request, ensure_ascii=False))
@@ -177,6 +183,46 @@ def test_rejection_backfills_without_redownload(tmp_path):
     saved = json.loads((Path(args.out) / 'manifest.json').read_text())
     assert [i['candidate']['id'] for i in saved['rejected']] == ['2']
     assert Path(saved['rejected'][0]['video']['file']).parent.name == 'rejected'
+
+
+def test_mechanisms_rejects_late_action_and_keeps_next_topic_in_queue(tmp_path):
+    args = args_for(tmp_path, series='car_mechanisms')
+    backend = FakeBackend([([tweet(i) for i in range(1, 5)], None)])
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    args.review_file = review_all(args.out)
+    path = Path(args.review_file)
+    review = json.loads(path.read_text())
+    review['items']['2']['verification']['editorial']['opening_action_at_sec'] = None
+    path.write_text(json.dumps(review))
+
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    args.review_file = review_all(args.out)
+    result = pipeline.run_pipeline(args, backend)
+
+    assert result['status'] == 'complete', result
+    assert result['published'] == 0
+    assert backend.downloads == ['1', '2', '3', '4']
+    saved = json.loads((Path(args.out) / 'manifest.json').read_text())
+    assert saved['rejected'][0]['reason'] == '汽车机关图鉴前 3 秒未见关键动作'
+    queue = publication_queue.PublicationQueue(history_path=args.publish_history).records()
+    assert {e['source_id'] for e in queue} == {'1', '3', '4'}
+    for entry in queue:
+        item = entry['item']
+        assert item['verification']['editorial']['follow_up_topic'] == 'Toyota Sera 蝴蝶门的开启空间'
+        item['verification']['editorial']['follow_up_topic'] = '另一选题'
+        with pytest.raises(ValueError, match='文案已变化'):
+            candidate_review.validate_review(item)
+
+
+def test_candidate_sort_prefers_opening_action_then_discussion():
+    def item(at, discussion, total):
+        return {'score': total, 'score_breakdown': {'discussion_question': discussion},
+                'verification': {'editorial': {'opening_action_at_sec': at}}}
+
+    strongest = item(1, 14, 75)
+    action = item(0, 11, 86)
+    static = item(None, 15, 95)
+    assert sorted([static, strongest, action], key=candidate_review.candidate_sort_key) == [strongest, action, static]
 
 
 def test_missing_review_evidence_and_changed_video_block(tmp_path):
