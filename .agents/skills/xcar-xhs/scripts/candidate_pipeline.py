@@ -63,6 +63,64 @@ class Backend:
                                      timeout=self.args.operation_timeout)
 
 
+def series_lookup(series_id):
+    for pillar_id, pillar in PILLARS.items():
+        for series in pillar['series']:
+            if series['id'] == series_id:
+                return {'id': series['id'], 'label': series['label'],
+                        'pillar': pillar_id, 'pillar_label': pillar['label'],
+                        'duration': pillar['duration'],
+                        'queries': ['%s filter:media %s' % (group, NEGATIVE_FILTERS)
+                                    for group in series['query_groups']]}
+    return None
+
+
+def series_pillar(series_id):
+    spec = series_lookup(series_id)
+    return spec['pillar'] if spec else None
+
+
+def apply_series_override(plan, series_ids):
+    """按指定系列重建选题计划；支持逗号分隔的多个系列合并为一个批次。"""
+    ids = [part.strip() for part in str(series_ids).split(',') if part.strip()]
+    specs = []
+    for series_id in ids:
+        spec = series_lookup(series_id)
+        if spec is None:
+            valid = sorted(s['id'] for p in PILLARS.values() for s in p['series'])
+            raise ValueError('未知系列：%s；可选：%s' % (series_id, ', '.join(valid)))
+        if spec['id'] not in [existing['id'] for existing in specs]:
+            specs.append(spec)
+    if not specs:
+        raise ValueError('--series 不能为空')
+    pillars = {spec['pillar'] for spec in specs}
+    queries, query_series = [], {}
+    for spec in specs:
+        for query in spec['queries']:
+            if query not in query_series:
+                queries.append(query)
+                query_series[query] = spec['id']
+    if len(specs) == 1:
+        spec = specs[0]
+        plan.update(pillar=spec['pillar'], pillar_label=spec['pillar_label'],
+                    series_id=spec['id'], series_label=spec['label'],
+                    target_duration_seconds=spec['duration'], queries=queries,
+                    prompt='指定选题｜%s｜%s｜候选生产' % (spec['pillar_label'], spec['label']))
+    else:
+        mixed = len(pillars) > 1
+        plan.update(
+            pillar=specs[0]['pillar'] if not mixed else 'mixed',
+            pillar_label='多系列组合' if mixed else PILLARS[specs[0]['pillar']]['label'],
+            series_id='+'.join(spec['id'] for spec in specs),
+            series_label=' / '.join(spec['label'] for spec in specs),
+            target_duration_seconds=specs[0]['duration'], queries=queries,
+            prompt='指定选题｜多系列（%s）｜候选生产' % '、'.join(spec['label'] for spec in specs),
+        )
+    plan['series_specs'] = specs
+    plan['query_series'] = query_series
+    return plan
+
+
 def make_queries(plan):
     # 车型、动作与排除条件共同定义系列，拆出单个短语会丢失检索范围。
     return list(dict.fromkeys(plan['queries']))
@@ -155,7 +213,9 @@ def apply_reviews(state, path, out, registry):
                          path=Path(state['history_file']).with_name('monitor_events.jsonl'))
             continue
         validate_content(approved)
-        approved.update(topic_pillar=state['plan']['pillar'], topic_series_id=state['plan']['series_id'],
+        item_series = entry.get('series_id') or state['plan'].get('series_id')
+        approved.update(topic_pillar=series_pillar(item_series) or state['plan']['pillar'],
+                        topic_series_id=item_series,
                         topic_strategy_version=state['plan']['strategy_version'], candidate_job_id=state['job_id'])
         entry.update(status='approved', item=approved, publish=content[source_id])
         record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
@@ -205,7 +265,7 @@ def write_manifest(state, out, history):
             content[source_id] = entry.get('publish') or {
                 'title': '淘汰素材 ' + source_id, 'body': entry['reason'], 'brand': '汽车',
                 'file_topic': source_id, 'topics': ['#汽车', '#素材核验']}
-    manifest = {'schema_version': 2, 'minimum_selected': 3, 'selection_target': state['target'],
+    manifest = {'schema_version': 2, 'minimum_selected': state.get('min_selected', 3), 'selection_target': state['target'],
                 'selection_complete': False, 'topic_plan': state['plan'],
                 'publish_history_file': str(history.path), 'downloads': selected, 'rejected': rejected}
     atomic_json(out / 'manifest.json', manifest)
@@ -229,6 +289,16 @@ def run_pipeline(args, backend=None):
         registered = next((job for job in registry['jobs'].values() if job.get('out_dir') == str(out)), None)
         if registered and registered.get('checkpoint'):
             state = copy.deepcopy(registered['checkpoint'])
+        # 定稿门槛：显式 --min-selected 优先，其次沿用任务已存的值，最后回落默认 3。
+        min_selected = getattr(args, 'min_selected', None)
+        if min_selected is None:
+            min_selected = (state or {}).get('min_selected', 3)
+        if min_selected < 1:
+            raise ValueError('--min-selected 必须为正整数')
+        if args.top < min_selected:
+            raise ValueError('--top(%d) 不能小于 --min-selected(%d)' % (args.top, min_selected))
+        if state is not None:
+            state['min_selected'] = min_selected
         if state is None:
             if (out / 'manifest.json').exists():
                 raise ValueError('目录已有其他任务 manifest，请用新的候选任务目录')
@@ -236,10 +306,14 @@ def run_pipeline(args, backend=None):
             plan = build_topic_plan(history.records(), queue.records(), list(registry['jobs'].values()))
             plan['series_episode'] = None  # 发布期数由发布计划分配。
             plan['prompt'] = '自动选题｜%s｜%s｜候选生产' % (plan['pillar_label'], plan['series_label'])
-            state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top,
+            if getattr(args, 'series', None):
+                plan = apply_series_override(plan, args.series)
+            state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
-                     'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False}
-                                               for q in make_queries(plan)], 'created_at': now()}
+                     'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,
+                                                  'series_id': (plan.get('query_series') or {}).get(q)
+                                                  or plan['series_id']}
+                                                 for q in make_queries(plan)], 'created_at': now()}
             record_event('candidate', 'topic_strategy', state['job_id'],
                          event_id=state['job_id'] + ':topic_strategy',
                          details={'series_id': plan.get('series_id'), 'pillar': plan.get('pillar')},
@@ -251,7 +325,8 @@ def run_pipeline(args, backend=None):
         retire_unscoped_queries(state, args.query)
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
-                state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False})
+                state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False,
+                                         'series_id': state['plan'].get('series_id')})
 
         def checkpoint():
             state['updated_at'] = now()
@@ -452,7 +527,9 @@ def run_pipeline(args, backend=None):
                               ('已发布或待确认' if history.check(source_id=source_id) else '') or
                               forbidden_topic_match(candidate))
                     state['items'][source_id] = {'status': 'skipped' if reason else 'discovered',
-                                                  'reason': reason, 'item': {'candidate': candidate}}
+                                                  'reason': reason,
+                                                  'series_id': query.get('series_id') or state['plan'].get('series_id'),
+                                                  'item': {'candidate': candidate}}
                 checkpoint()
             state['status'] = 'finalizing'
             state['phase'] = 'finalizing'
@@ -481,6 +558,8 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True, help='新任务目录；同目录再次运行恢复')
     parser.add_argument('--top', type=int, default=3)
+    parser.add_argument('--min-selected', type=int, default=None,
+                        help='本批定稿入池所需的最少核验入选数；默认 3，小批补池可显式设为 1')
     parser.add_argument('--query', action='append', default=[], help='追加同系列检索式')
     parser.add_argument('--sort', choices=sorted(finder.SORT_FIELDS), default='likes')
     parser.add_argument('--limit', type=int, default=25)
@@ -502,14 +581,15 @@ def build_parser():
     parser.add_argument('--max-seconds', type=int, default=600)
     parser.add_argument('--cancel', action='store_true')
     parser.add_argument('--retry-failed', action='store_true', help='显式重试下载/抽帧失败')
+    parser.add_argument('--series', help='指定选题系列（新任务生效），用于一轮内并行多个选题策略')
     return parser
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.top < 3 or args.max_pages < 1 or args.max_downloads < 3 or args.max_seconds < 1:
-        parser.error('至少 3 条目标；页数、下载和时间预算必须为正且下载预算至少 3')
+    if args.top < (args.min_selected or 3) or args.max_pages < 1 or args.max_downloads < 3 or args.max_seconds < 1:
+        parser.error('目标条数不能小于 --min-selected（默认 3）；页数、下载和时间预算必须为正且下载预算至少 3')
     if args.max_duration <= 0 or args.min_likes < 0 or args.min_reposts < 0 or args.limit < 1 or args.delay < 0:
         parser.error('时长/页大小必须为正；互动门槛和延迟不能为负')
     args.auto_topic = args.xiaohongshu = True

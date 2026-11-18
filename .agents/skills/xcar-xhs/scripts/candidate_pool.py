@@ -16,8 +16,9 @@ def enqueue_finalized(out_dir, history, queue=None):
     items = manifest.get('downloads') or []
     if not manifest.get('finalized_at') or not manifest.get('selection_complete'):
         raise ValueError('必须先完成定稿再入池')
-    if len(items) < max(3, manifest.get('selection_target') or 3):
-        raise ValueError('入池批次至少需要 3 条核验通过的候选')
+    required = max(manifest.get('minimum_selected') or 3, manifest.get('selection_target') or 0)
+    if len(items) < required:
+        raise ValueError('入池批次至少需要 %d 条核验通过的候选' % required)
     queue = queue or PublicationQueue(history_path=history.path)
     records = latest_records(history.records())
     candidates, skipped = [], []
