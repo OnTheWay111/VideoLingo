@@ -20,7 +20,7 @@ from content_policy import SCORE_THRESHOLD, content_duplicate, content_identity,
 from finalize import apply_publish_content, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
-from query_schedule import prior_query_yield, search_text, select_query
+from query_schedule import narrow_mechanism_query, prior_query_yield, search_text, select_query
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
@@ -146,6 +146,28 @@ def retire_unscoped_queries(state, explicit_queries):
             })
         else:
             active.append(query)
+    state['queries'] = active
+
+
+def narrow_mechanism_queries(state):
+    """收紧宽泛查询，已有的原始结果和游标留在旧查询名下。"""
+    known = {q['query'] for q in state['queries']}
+    active = []
+    for query in state['queries']:
+        original = query['query']
+        series_id = query.get('series_id') or state['plan']['series_id']
+        narrowed = narrow_mechanism_query(original, series_id)
+        if original == narrowed:
+            active.append(query)
+            continue
+        if query['pages']:
+            state.setdefault('retired_queries', []).append({
+                **query, 'reason': '宽泛机构词已补车型，旧游标不适用于新查询',
+            })
+        if narrowed not in known:
+            active.append({'query': narrowed, 'cursor': None, 'pages': 0,
+                           'done': False, 'series_id': series_id})
+            known.add(narrowed)
     state['queries'] = active
 
 
@@ -352,6 +374,8 @@ def run_pipeline(args, backend=None):
             if query not in [q['query'] for q in state['queries']]:
                 state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False,
                                          'series_id': state['plan']['series_id'].split('+')[0]})
+        if not args.cancel and state['status'] not in ('complete', 'cancelled'):
+            narrow_mechanism_queries(state)
 
         def checkpoint():
             state['updated_at'] = now()

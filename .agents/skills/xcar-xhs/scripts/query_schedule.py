@@ -1,9 +1,11 @@
 """候选检索按近期实际产出安排请求，兼容旧批次留存的搜索页。"""
 import hashlib
 import json
+import re
 from datetime import timedelta
 from pathlib import Path
 
+from candidate_review import ACTION_SERIES
 from content_policy import parse_datetime
 
 RECENT_BATCHES = 12
@@ -11,6 +13,31 @@ COOLDOWN = timedelta(days=1)
 SEARCH_SETTINGS = {'type': 'top', 'limit': 25, 'since': None, 'min_likes': 0, 'min_reposts': 0}
 CANDIDATE_STATUSES = {'downloading', 'downloaded', 'awaiting_review', 'approved',
                       'rejected', 'frame_failed', 'download_failed'}
+
+
+POP_UP_HEADLIGHT_MODELS = '("Mazda MX-5" OR "马自达 MX-5" OR "Corvette C5" OR "Nissan 300ZX" OR "日产 300ZX")'
+SIDE_TAILGATE_MODELS = '("Ford F-150" OR "福特 F-150" OR "Honda Ridgeline" OR "GMC Sierra")'
+BROAD_MECHANISM_QUERIES = {
+    '跳灯': POP_UP_HEADLIGHT_MODELS,
+    '翻灯': POP_UP_HEADLIGHT_MODELS,
+    '跳灯 翻灯': POP_UP_HEADLIGHT_MODELS,
+    '翻灯 跳灯': POP_UP_HEADLIGHT_MODELS,
+    '尾门': SIDE_TAILGATE_MODELS,
+    '尾门 侧开': SIDE_TAILGATE_MODELS,
+    '侧开 尾门': SIDE_TAILGATE_MODELS,
+    '侧开尾门': SIDE_TAILGATE_MODELS,
+}
+QUERY_MODIFIERS = re.compile(r'(?<!\S)(?:-?[A-Za-z_]+:\S+|-(?:"[^"]*"|\S+))')
+
+
+def narrow_mechanism_query(query, series_id):
+    """只有补充词缺少车型或其他限定时，才给已知的宽泛词加车型。"""
+    if series_id == ACTION_SERIES:
+        positive = QUERY_MODIFIERS.sub(' ', query).replace('"', '')
+        models = BROAD_MECHANISM_QUERIES.get(' '.join(positive.split()))
+        if models:
+            return f'{query} {models}'
+    return query
 
 
 def search_text(query, settings):
@@ -93,14 +120,11 @@ def prior_query_yield(jobs, state):
 
 
 def select_query(queries, history, items):
-    """仅对最近一页有新候选的词续页。降频的首页仍作为兜底。"""
+    """仅对首页及最近一页均有审核通过素材的词续页。"""
     def priority(query):
         pages = query['pages']
         if pages:
-            # 老检查点保留已保存的游标，缺少产出证据时放到可验证的检索之后。
-            if str(pages) not in query.get('page_sources', {}):
-                return (4, pages)
-            # 先让有产出的词探第二页。第三页起让给尚未尝试的首页。
+            # 先探第二页。第三页起让给尚未尝试的首页。
             return (0 if pages == 1 else 2, pages)
         stats = history.get(query_key(query))
         if stats and stats['dry_streak'] >= 2:
@@ -113,7 +137,11 @@ def select_query(queries, history, items):
     for query in queries:
         if query['done']:
             continue
-        last_page = query.get('page_sources', {}).get(str(query['pages']))
-        if last_page is None or candidate_count(last_page, items):
-            available.append(query)
+        if query['pages']:
+            sources = query.get('page_sources', {})
+            required_pages = {'1', str(query['pages'])}
+            if not all(any(items.get(source_id, {}).get('status') == 'approved'
+                           for source_id in sources.get(page, ())) for page in required_pages):
+                continue
+        available.append(query)
     return min(available, key=priority, default=None)

@@ -289,6 +289,62 @@ def test_search_prioritizes_productive_cursor_and_stops_after_repeated_page(tmp_
     assert len(backend.searches) == 3
 
 
+def test_search_waits_for_homepage_review_and_skips_cursor_after_rejection(tmp_path):
+    args = args_for(tmp_path, series='car_mechanisms', max_pages=2)
+    backend = FakeBackend([([tweet(1)], 'first-cursor'), ([tweet(2)], None)])
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    assert len(backend.searches) == 1
+
+    args.review_file = review_all(args.out, reject=('1',))
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    first, second = backend.searches
+    assert second[0] != first[0] and second[1:] == (None, 1)
+    assert backend.downloads == ['1', '2']
+
+
+def test_cursor_requires_approval_on_both_first_and_latest_pages():
+    query = {'query': 'demo', 'pages': 2, 'done': False, 'cursor': 'saved'}
+    items = {'1': {'status': 'approved'}, '2': {'status': 'rejected'}}
+    assert pipeline.select_query([query], {}, items) is None
+    query['page_sources'] = {'1': ['1'], '2': ['2']}
+    assert pipeline.select_query([query], {}, items) is None
+    items['2']['status'] = 'approved'
+    assert pipeline.select_query([query], {}, items) == query
+    items['1']['status'] = 'rejected'
+    assert pipeline.select_query([query], {}, items) is None
+
+
+def test_candidate_search_narrows_generic_mechanism_words(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, 'make_queries', lambda plan: [])
+    lamps = '跳灯 翻灯 min_faves:15 filter:videos -"car show"'
+    tailgate = '"尾门 侧开" min_faves:15 filter:videos'
+    scoped = '"Honda Ridgeline" "双向尾门" filter:videos'
+    args = args_for(tmp_path, series='car_mechanisms', query=[lamps, tailgate, scoped], max_pages=3)
+    backend = FakeBackend([([], None)] * 3)
+    assert pipeline.run_pipeline(args, backend)['status'] == 'exhausted'
+    first, second, third = backend.searches
+    assert first[0].startswith(lamps + ' (') and '"Mazda MX-5"' in first[0]
+    assert second[0].startswith(tailgate + ' (') and '"Honda Ridgeline"' in second[0]
+    assert third[0] == scoped
+
+
+def test_narrowing_preserves_existing_search_and_discards_incompatible_cursor():
+    broad = {'query': '跳灯 翻灯 filter:videos', 'pages': 1, 'cursor': 'old', 'done': False,
+             'series_id': 'car_mechanisms', 'page_sources': {'1': ['1']}}
+    state = {'plan': {'series_id': 'car_mechanisms'}, 'queries': [broad]}
+    pipeline.narrow_mechanism_queries(state)
+    precise, = state['queries']
+    assert precise['pages'] == 0 and precise['cursor'] is None
+    assert state['retired_queries'][0]['page_sources'] == broad['page_sources']
+
+    precise.update(pages=1, cursor='new', page_sources={'1': ['2']})
+    state['queries'].append(dict(broad, pages=0, cursor=None))
+    pipeline.narrow_mechanism_queries(state)
+    assert state['queries'] == [precise]
+    assert len(state['retired_queries']) == 1
+
+
 def test_search_learns_from_compatible_prior_batches_and_keeps_dry_queries_as_fallback(tmp_path):
     import hashlib
 
