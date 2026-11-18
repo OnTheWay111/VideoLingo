@@ -737,17 +737,20 @@ def test_cross_sentence_mechanism_requires_clear_ownership(caption, expected):
 
 def test_color_only_gate_uses_series_and_precedes_downloader(tmp_path):
     args = args_for(tmp_path, series='car_mechanisms', max_pages=1)
-    captions = ['Color changing BMW iX Flow', 'BMW iX Flow changes color and opens its doors',
+    captions = ['Color changing BMW iX Flow', 'BMW just announced: Dee. A fully color-changing car.',
+                'BMW iX Flow changes color and opens its doors',
                 'Pagani Huayra active flaps and color-shifting finish', 'BMW iX Flow concept car']
     posts = [dict(tweet(i), text=caption) for i, caption in enumerate(captions, 1)]
     backend = FakeBackend([(posts, None)])
     result = pipeline.run_pipeline(args, backend)
-    assert result['color_only_skipped'] == 1
+    assert result['color_only_skipped'] == 2
     assert result['recent_mechanism_skipped'] == 0
     assert result['downloads_attempted'] == 3
-    assert backend.downloads == backend.frame_calls == ['2', '3', '4']
+    assert backend.downloads == backend.frame_calls == ['3', '4', '5']
     state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
     assert state['items']['1']['color_only']['technology_evidence'] == 'ix flow'
+    assert state['items']['2']['color_only'] == {
+        'technology_evidence': 'bmw just announced: dee', 'color_evidence': 'color-changing'}
 
 
 @pytest.mark.parametrize(('text', 'expected'), [
@@ -768,6 +771,49 @@ def test_color_only_gate_uses_series_and_precedes_downloader(tmp_path):
 def test_color_filter_preserves_unclear_and_other_series(text, expected):
     assert bool(pipeline.color_only_match(text, 'car_mechanisms')) is expected
     assert pipeline.color_only_match(text, 'classic_restoration') is None
+
+
+@pytest.mark.parametrize('caption', [
+    "BMW’s Dee changes colour.",
+    "BMW i Vision Dee w/ E-Ink!",
+    "The new BMW i Vision Dee with 32 colour E-ink technology.",
+    "BMW i Vision Dee. An individually configurable exterior with up to 32 different colours.",
+    "车身颜色可配置，宝马 Dee 的电子墨水外皮能玩出什么花样！",
+    "BMW iX Flow uses E Ink technology to transform its exterior appearance in real time.",
+    "BMW apresenta carro que muda de cor. O BMW iX Flow muda a cor da carroceria e das rodas.",
+    "تقنية iX Flow حيث يتغير لون المركبة من أبيض لأسود.",
+    "السيارة المتغيرة اللون BMW iX Flow",
+])
+def test_electronic_body_color_evidence(caption):
+    match = pipeline.color_only_match(caption, 'car_mechanisms')
+    assert match and match['technology_evidence'] and match['color_evidence']
+    assert not pipeline.color_only_match(caption, 'classic_restoration')
+
+
+@pytest.mark.parametrize('caption', [
+    "BMW iX Flow", "BMW just announced: Dee.", "Meet Dee, a fan of color-changing cars.",
+    "Dee changes color. https://example.com/BMW",
+    "Does BMW Dee have a configurable exterior with up to 32 different colours?",
+    "BMW i Vision Dee with E Ink? No specs yet.",
+    "BMW Dee could change color one day.",
+    "BMW Dee has a 32 colour E-Ink dashboard.",
+    "BMW i Vision Dee w/ E-Ink display.",
+    "BMW Dee changes colours. Its door handles extend.",
+    "BMW i Vision Dee: configurable exterior colors. The grille opens at speed.",
+    "宝马 Dee 的车身颜色可配置，前灯也会翻转。",
+    "BMW iX Flow: carro que muda de cor. As rodas também giram.",
+    "BMW iX Flow: carro que muda de cor. O teto se abre.",
+    "O BMW iX Flow não é um carro que muda de cor.",
+    "BMW iX Flow cambia de color y las ruedas se mueven.",
+    "تقنية iX Flow حيث يتغير لون المركبة ثم تنفتح الأبواب.",
+    "iX Flow لا يتغير لون المركبة.",
+    "هل يتغير لون المركبة في iX Flow؟",
+    "BMW iX Flow changes color. #retractable spoiler",
+    "BMW Dee changes colour. #ActiveSpoiler",
+    "Changing a car’s exterior color typically requires paint. What if a button could do it?",
+])
+def test_color_only_requires_a_clear_single_feature(caption):
+    assert not pipeline.color_only_match(caption, 'car_mechanisms')
 
 
 def test_gina_reposts_require_prior_approval_of_the_fabric_hood():
