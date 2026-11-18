@@ -111,12 +111,37 @@ class PublicationQueue:
                 write_queue(handle, data)
         return added
 
+    def set_publish_hold(self, source_ids, hold):
+        """批量保留或解除保留。全部原帖均仍在排队时才原子写入。"""
+        ids = set(map(str, source_ids))
+        with locked_queue(self.path, create=True) as handle:
+            data = read_queue(handle)
+            selected = [e for e in data['entries'] if e['source_id'] in ids]
+            if not ids or len(selected) != len(ids) or any(e['status'] != 'queued' for e in selected):
+                raise ValueError('保留操作要求所有原帖仍为 queued')
+            changed = []
+            for entry in selected:
+                if bool(entry.get('publish_hold')) != hold:
+                    entry['publish_hold'] = hold
+                    entry['revision'] = entry.get('revision', 1) + 1
+                    changed.append(entry['source_id'])
+            if changed:
+                write_queue(handle, data)
+            return {'publish_hold': hold, 'source_ids': sorted(ids), 'changed': changed}
+
+    def ensure_not_held(self, source_ids):
+        ids = set(map(str, source_ids))
+        for entry in self.records():
+            if entry['source_id'] in ids and entry.get('publish_hold'):
+                raise ValueError('候选仅保留在池中，禁止提交：' + entry['source_id'])
+
     def select(self, latest_published=None, excluded_source_ids=()):
         excluded_source_ids = set(map(str, excluded_source_ids))
         self.audit()
         with locked_queue(self.path, create=True) as handle:
             data = read_queue(handle)
             entries = data["entries"]
+            excluded_source_ids.update(e['source_id'] for e in entries if e.get('publish_hold'))
             planned = next((entry for entry in entries if entry.get("status") == "planned"
                             and entry.get("source_id") not in excluded_source_ids), None)
             if planned:

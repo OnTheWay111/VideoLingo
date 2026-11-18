@@ -604,6 +604,8 @@ def run(out_dir, history, profile, headless, only=None, preflight=False, timeout
 def run_locked(out_dir, history, profile, headless, only=None, preflight=False, timeout=180,
                sleep_fn=time.sleep, session=None):
     plans = load_plans(out_dir, only)
+    if not preflight:
+        PublicationQueue(history_path=history.path).ensure_not_held(plan['source_id'] for plan in plans)
     results = []
     context = contextlib.nullcontext(session) if session is not None else ChromeSession(profile, headless, timeout)
     with context as chrome:

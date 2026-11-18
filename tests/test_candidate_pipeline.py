@@ -733,3 +733,54 @@ def test_cross_sentence_mechanism_requires_clear_ownership(caption, expected):
         assert result['match_scope'] == 'cross_sentence'
         assert 2 <= len(result['evidence_sentences']) <= 4
         assert result['source_id'] == 'old'
+
+
+def test_color_only_gate_uses_series_and_precedes_downloader(tmp_path):
+    args = args_for(tmp_path, series='car_mechanisms', max_pages=1)
+    captions = ['Color changing BMW iX Flow', 'BMW iX Flow changes color and opens its doors',
+                'Pagani Huayra active flaps and color-shifting finish', 'BMW iX Flow concept car']
+    posts = [dict(tweet(i), text=caption) for i, caption in enumerate(captions, 1)]
+    backend = FakeBackend([(posts, None)])
+    result = pipeline.run_pipeline(args, backend)
+    assert result['color_only_skipped'] == 1
+    assert result['recent_mechanism_skipped'] == 0
+    assert result['downloads_attempted'] == 3
+    assert backend.downloads == backend.frame_calls == ['2', '3', '4']
+    state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
+    assert state['items']['1']['color_only']['technology_evidence'] == 'ix flow'
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('i Vision Dee 电子墨水车身变色', True),
+    ('New E Ink exterior changes color electronically.', True),
+    ('BMW #iX Flow cambia de color.', True),
+    ('BMW iX Flow changes color. Watch the wing deploy.', False),
+    ('BMW iX Flow 车身变色，另一侧后视镜同时转动', False),
+    ('Does this iX Flow change color?', False),
+    ('The iX Flow cannot change color.', False),
+    ('Color-changing car vs iX Flow', False),
+    ('Color change demonstration https://example.com/ix-flow', False),
+    ('Color-changing fabric', False),
+    ('iX Flow 车身变化很大', False),
+    ('BMW iX Flow changes color and shape.', False),
+    ('BMW iX Flow and a color-changing jacket', False),
+])
+def test_color_filter_preserves_unclear_and_other_series(text, expected):
+    assert bool(pipeline.color_only_match(text, 'car_mechanisms')) is expected
+    assert pipeline.color_only_match(text, 'classic_restoration') is None
+
+
+def test_gina_reposts_require_prior_approval_of_the_fabric_hood():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    source = {'candidate': {'id': 'original'}, 'brand': 'BMW', 'model': 'GINA Light Visionary Model',
+              'verifiable_fact': '织物机盖沿中线向两侧分开', 'verification': {'reviewed_at': now.isoformat()}}
+    repost = 'The BMW GINA has a moving skin 😱'
+    assert not pipeline.match_recent_mechanism(repost, pipeline.recent_mechanisms([], [], now))
+    index = pipeline.recent_mechanisms([], [], now, [source])
+    assert pipeline.match_recent_mechanism(repost, index)['source_id'] == 'original'
+    assert pipeline.match_recent_mechanism('BMW Gina has flexible skin that actually moves. 📹 NewCamera', index)
+    for caption in ('BMW GINA has flexible skin', 'BMW GINA has moving skin around the headlights',
+                    'BMW GINA has moving skin. Its doors open vertically.', 'BMW GINA and another car with moving skin'):
+        assert not pipeline.match_recent_mechanism(caption, index)
+    different = dict(source, verifiable_fact='织物覆盖的头灯打开')
+    assert not pipeline.match_recent_mechanism(repost, pipeline.recent_mechanisms([], [], now, [different]))

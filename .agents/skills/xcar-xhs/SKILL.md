@@ -398,7 +398,7 @@ python3 .agents/skills/xcar-xhs/scripts/monitor_telemetry.py record \
 5. 按 [审核协议](references/candidate-pipeline.md) 保存 `review.json`，用 `--review-file` 恢复。视频哈希不一致、审核证据缺失会阻断；评分不足、禁选、同品牌/车型/项目重复会淘汰递补。任务预算耗尽可提高预算或添加同系列检索式；接口受限时保存进度并报告，不伪称完成。
 6. 至少三条合格后，脚本自动定稿、可恢复重命名并写入候选池；正常完成只产生 queued。报告新增/跳过数量、审核及淘汰情况、`candidate_receipt.json`、队列与视频路径。默认不调用 `publish_pipeline.py`，不把已入池写成已发布。
 7. 只有明确发布请求才调用发布入口；公开链接、中断恢复及 24/72 小时效果流程沿用发布手册。已入池的旧版 `verified` / `passed` 候选沿用真实 `car_only` 结论及现存抽帧，发布前仍校验文案、评分、文件和已有哈希；不因缺新版审核字段重新入池，也不伪造 approved 或哈希。此前仅因旧格式或授权字段被标为 needs_review 的条目，须通过当前发布校验后才恢复 queued；其他复核原因保持不变。新版候选继续校验画面、事实与评分证据；不得把发布复核扩展为转载授权依据校验。
-8. 完成候选任务时按下方入选和淘汰表交付，注明“已入候选池，未发布”；缺口或阻塞时如实说明。队列维护使用 `candidate_pool.py audit/update/withdraw`，更新和撤回必须带当前 revision，不修改 planned、published 或 unconfirmed 条目。
+8. 完成候选任务时按下方入选和淘汰表交付，注明“已入候选池，未发布”；缺口或阻塞时如实说明。用户要求独立发布流程也保留指定候选时，用 `candidate_pool.py hold --source-id ID`，多个 ID 重复传参。保留项仍在候选池，独立发布入口会跳过；用户明确解除时用 `unhold`。队列维护使用 `candidate_pool.py audit/update/withdraw`，更新和撤回必须带当前 revision，不修改 planned、published 或 unconfirmed 条目。
 
 ## 最终汇报格式（X 汽车完整流水线必选）
 

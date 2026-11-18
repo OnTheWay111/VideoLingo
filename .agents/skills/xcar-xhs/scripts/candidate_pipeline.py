@@ -24,7 +24,7 @@ from publish_history import PublishedHistory, default_history_path, locked_histo
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries
-from topic_policy import forbidden_topic_match
+from topic_policy import color_only_match, forbidden_topic_match
 from xiaohongshu_publisher import latest_records, validate_content
 
 
@@ -284,6 +284,8 @@ def write_manifest(state, out, history):
     manifest = {'schema_version': 2, 'minimum_selected': state.get('min_selected', 3), 'selection_target': state['target'],
                 'selection_complete': False, 'topic_plan': state['plan'],
                 'publish_history_file': str(history.path), 'downloads': selected, 'rejected': rejected,
+                'color_only_skipped': [{'source_id': key, 'match': entry['color_only']}
+                                       for key, entry in state['items'].items() if 'color_only' in entry],
                 'recent_mechanism_skipped': [{'source_id': key, 'match': entry['recent_duplicate']}
                                              for key, entry in state['items'].items() if 'recent_duplicate' in entry]}
     atomic_json(out / 'manifest.json', manifest)
@@ -372,6 +374,7 @@ def run_pipeline(args, backend=None):
                       'rejected': sum(e['status'] == 'rejected' for e in state['items'].values()),
                       'retryable_failed': sum(e['status'] in ('download_failed', 'frame_failed') for e in state['items'].values()),
                       'pages_used': state['pages'], 'downloads_attempted': state['downloads'],
+                      'color_only_skipped': sum('color_only' in e for e in state['items'].values()),
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
                       'error': error, 'enqueue': state.get('enqueue')}
@@ -473,7 +476,14 @@ def run_pipeline(args, backend=None):
                             checkpoint()
                             continue
                         if entry['status'] == 'discovered':
-                            match = match_recent_mechanism(item['candidate'].get('text', ''), recent)
+                            caption = item['candidate'].get('text', '')
+                            series_id = entry.get('series_id') or state['plan'].get('series_id')
+                            color = color_only_match(caption, series_id)
+                            if color:
+                                entry.update(status='skipped', color_only=color, reason='汽车机关图鉴：原帖仅展示车身变色')
+                                checkpoint()
+                                continue
+                            match = match_recent_mechanism(caption, recent)
                             if match:
                                 entry.update(status='skipped', recent_duplicate=match,
                                              reason='下载前命中近 30 天同车型同机构：%s %s · %s' %

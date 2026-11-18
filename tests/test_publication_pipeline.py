@@ -402,3 +402,31 @@ def test_ingestion_and_publication_omit_rights_but_validate_media(tmp_path, setu
     item['verification']['video_sha256'] = 'changed'
     with pytest.raises(ValueError, match='视频已变化'):
         validate_publication_review(item)
+
+
+def test_publish_hold_is_atomic_and_blocks_queue_and_saved_plan(tmp_path, setup_plan, monkeypatch):
+    history, plan = setup_plan
+    queue = PublicationQueue(history_path=history.path)
+    queue.release(plan['source_id'])
+    second = tmp_path / 'second'
+    second.mkdir()
+    other = finalized_output(second, tweet_id='456', title='另一条候选')
+    other.update(brand='BMW', model='Z1')
+    from tests.candidate_fixtures import approve_item
+    approve_item(other)
+    queue.enqueue([other], second)
+    with pytest.raises(ValueError):
+        queue.set_publish_hold(['123', 'absent'], True)
+    assert not any(e.get('publish_hold') for e in queue.records())
+    assert queue.set_publish_hold(['123'], True)['changed'] == ['123']
+    assert queue.set_publish_hold(['123'], True)['changed'] == []
+    assert queue.select()['source_id'] == '456'
+    queue.release('456')
+    queue.set_publish_hold(['456'], True)
+    assert queue.select() is None
+    monkeypatch.setattr(chrome, 'ChromeSession', lambda *a, **kw: pytest.fail('保留项不能进入浏览器'))
+    with pytest.raises(ValueError, match='仅保留'):
+        chrome.run_locked(tmp_path, history, 'Default', True)
+    assert all(e['status'] == 'queued' for e in queue.records())
+    queue.set_publish_hold(['123'], False)
+    assert queue.select()['source_id'] == '123'

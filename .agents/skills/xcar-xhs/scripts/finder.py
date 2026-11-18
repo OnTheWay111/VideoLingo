@@ -34,7 +34,7 @@ from web_session import (
 from publish_history import PublishedHistory, default_history_path
 from content_policy import MIN_TOTAL_ENGAGEMENT, engagement_rejection_reason, engagement_total
 from topic_planner import build_topic_plan
-from topic_policy import partition_forbidden_topics
+from topic_policy import color_only_match, partition_forbidden_topics
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from publication_queue import PublicationQueue
 
@@ -837,7 +837,12 @@ def main():
                                    datetime.datetime.now(datetime.timezone.utc))
         fresh = []
         for candidate in ranked:
-            match = match_recent_mechanism(candidate.get('text', ''), recent)
+            caption = candidate.get('text', '')
+            color = color_only_match(caption, (topic_plan or {}).get('series_id'))
+            if color:
+                topic_skipped.append({'candidate': candidate, 'match': color, 'reason': '汽车机关图鉴：原帖仅展示车身变色'})
+                continue
+            match = match_recent_mechanism(caption, recent)
             if match:
                 topic_skipped.append({'candidate': candidate, 'match': match,
                                       'reason': '近 30 天同车型同机构：%s %s · %s' %

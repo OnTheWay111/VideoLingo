@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from content_policy import content_duplicate, content_identity
+from publication_runtime import execution_lock
 from publication_queue import PublicationQueue
 from publish_history import PublishedHistory, default_history_path, ACTIVE_STATUSES
 from xiaohongshu_publisher import validate_content, latest_records
@@ -52,6 +53,9 @@ def main(argv=None):
     withdraw.add_argument('--source-id', required=True)
     withdraw.add_argument('--revision', required=True, type=int)
     withdraw.add_argument('--reason', required=True)
+    for action in ('hold', 'unhold'):
+        protection = commands.add_parser(action)
+        protection.add_argument('--source-id', required=True, action='append')
     update = commands.add_parser('update')
     update.add_argument('--source-id', required=True)
     update.add_argument('--revision', required=True, type=int)
@@ -62,6 +66,9 @@ def main(argv=None):
     try:
         if args.command == 'enqueue':
             result = enqueue_finalized(args.out, history, queue)
+        elif args.command in ('hold', 'unhold'):
+            with execution_lock(history.path):
+                result = queue.set_publish_hold(args.source_id, args.command == 'hold')
         elif args.command == 'audit':
             result = {'changed': queue.audit(args.max_age_days)}
         elif args.command == 'withdraw':
@@ -82,7 +89,7 @@ def main(argv=None):
             result = queue.update_candidate(args.source_id, item, args.revision, args.out)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
         print(json.dumps({'status': 'blocked', 'error': str(exc)}, ensure_ascii=False))
         return 2
 

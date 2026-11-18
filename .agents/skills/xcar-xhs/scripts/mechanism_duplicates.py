@@ -28,6 +28,7 @@ MECHANISMS = {
 }
 # 允许脱离品牌独立识别的专名，或同一确切版本的常见写法。
 MODEL_ALIASES = {
+    ('bmw', 'gina light visionary model'): ('BMW GINA', '宝马GINA'),
     ('tesla', 'model x'): ('Model X',),
     ('tesla', 'cybertruck'): ('Cybertruck', '赛博皮卡'),
     ('mercedes-benz', '300 sl coupe'): ('Mercedes 300 SL Gullwing', '奔驰300SL鸥翼'),
@@ -74,9 +75,12 @@ def recent_mechanisms(history_records, queue_records, now, approved=()):
             # 只使用已核验的本期选题，不从讨论题、下期预告或标签推断机构。
             topic = fold(' '.join(str(item.get(k) or '') for k in ('title', 'file_topic', 'verifiable_fact')))
             mechanisms = {label: pattern for label, pattern in MECHANISMS.items() if re.search(pattern, topic)}
+            make = normalize_brand(fold(brand))
+            if make == 'bmw' and fold(model) in ('gina', 'gina light visionary model'):
+                if re.search(GINA_HOOD, topic):
+                    mechanisms['织物机盖开口'] = GINA_HOOD
             if not mechanisms:
                 continue
-            make = normalize_brand(fold(brand))
             makes = {brand, *MAKE_ALIASES.get(make, ()), *(k for k, v in BRAND_ALIASES.items() if v == make)}
             names = [alias + ' ' + model for alias in makes]
             names.extend(MODEL_ALIASES.get((make, fold(model)), ()))
@@ -87,12 +91,35 @@ def recent_mechanisms(history_records, queue_records, now, approved=()):
     return index
 
 
+# 通称“moving skin”只匹配单一主题的 GINA 转帖。提到车门、头灯等其他动作仍需审画面。
+GINA_HOOD = (r'(?:织物|布面|柔性)(?:发动)?机盖.{0,14}(?:开启|打开|张开|开口|分开)'
+             r'|(?:fabric|cloth) (?:hood|bonnet).{0,20}(?:opens?|splits?)')
+GINA_REPOST = re.compile(
+    r'(?:(?:this is |meet )?the (?:super rare )?)?(?P<model>bmw\s+gina|宝马\s*gina)'
+    r"(?: has (?:a )?|的)(?P<skin>moving skin|(?:flexible )?skin that (?:actually )?moves|会动的(?:织物)?车身)"
+    r'(?P<tail>.*)', re.S)
+# 转帖有时附署名或询问蒙皮破损。只接受这些尾注，额外部件或动作留给画面审核。
+SKIN_ASIDE = re.compile(
+    r'[\W_]*(?:(?:📹|video by|credits?:?|via)\s*[\w.-]+|'
+    r'(?:my question is\W+)?what (?:if|happens (?:if|when)) '
+    r'(?:(?:a|the|it|skin|gets?|small|deep|is|was|or|and|happens?)\s+)*'
+    r'(?:scratch(?:ed)?|tear|torn|tore|rips?|ripped|cut)'
+    r'(?:\s+(?:or|and|tears?|scratches?|happens?))*)?[\W_]*')
+
+
 def match_recent_mechanism(text, index):
     # 查询词、作者账号、链接和孤立标签不构成原帖证据。比较或否定句留给画面审核。
     caption = fold(re.sub(r'https?://\S+|[@#]\w+', ' ', text))
     if re.search(r'\b(?:vs|versus|unlike|whereas|both (?:cars|vehicles)|(?:same|similar) feature|'
                  r'compared (?:to|with)|which (?:one|car)|or (?:is|was) (?:it|this))\b|对比|相比|两[辆款]车|哪[辆款]车', caption):
         return None
+    repost = GINA_REPOST.fullmatch(caption.strip())
+    if repost and SKIN_ASIDE.fullmatch(repost['tail']):
+        for model, mechanisms, record in index:
+            if (record['status'] == 'approved' and '织物机盖开口' in mechanisms
+                    and model.fullmatch(repost['model'])):
+                return {**record, 'mechanism': '织物机盖开口', 'model_evidence': repost['model'],
+                        'mechanism_evidence': repost['skin']}
     for clause in CLAUSE.split(caption):
         if AMBIGUOUS.search(clause.replace('not just ', '').replace('not only ', '')):
             continue
