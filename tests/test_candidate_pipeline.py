@@ -816,6 +816,40 @@ def test_color_only_requires_a_clear_single_feature(caption):
     assert not pipeline.color_only_match(caption, 'car_mechanisms')
 
 
+@pytest.mark.parametrize(('caption', 'expected'), [
+    ('BMW has a color-changing car called Dee', True),
+    ('BMW unveiled its new colour-changing concept vehicle named “Dee”', True),
+    ('宝马有一辆叫 Dee 的变色车', True),
+    ('宝马推出一款变色概念车名为 Dee', True),
+    ('Meet a colour-changing car created by a designer called Dee', False),
+    ('BMW apresenta carro elétrico que muda de cor. O modelo iX Flow.', True),
+    ('O iX Flow é um veículo elétrico que pode mudar de cor.', True),
+    ('The BMW i Vision Dee can now transform into 32 colors, not just black and white. '
+     'It is a color-changing car.', True),
+    ('BMW’s color-changing E Ink i Vision Dee. “Vaporware or not, I want it.”', True),
+    ('BMW Dee changes color without a paint shop.', True),
+    ('BMW Dee is not the first color-changing car, but it changes colors.', True),
+    ('BMW Dee has no color change in the clip.', False),
+    ('BMW Dee can never actually change its exterior color.', False),
+    ('BMW Dee was advertised as color-changing. It isn’t able to change colours.', False),
+    ('BMW Dee does not have a color-changing exterior.', False),
+    ('The BMW Dee color change is not possible in this demo.', False),
+    ('BMW iX Flow não é um carro elétrico que muda de cor.', False),
+    ('宝马 Dee 不能改变车身颜色。', False),
+    ('iX Flow لا يمكن أن يتغير لون المركبة.', False),
+    ('BMW has a color-changing car called Dee. Its doors open in the first shot.', False),
+    ('BMW mostra o iX Flow: carro elétrico que muda de cor e abre o teto.', False),
+    ('BMW has a color-changing car called Dee. E Ink changes color and the chassis raises.', False),
+    ('The future of the color changing car for BMW has a name: “BMWi Vision DEE” '
+     'and the possibilities are endless 🔥 https://t.co/Dnz2DCYlFD', False),
+    ('The future of the color changing car for BMW has a name: “BMW i Vision DEE” '
+     'and the possibilities are endless 🔥', False),
+    ('BMW Dee changes color but it is no substitute for an active spoiler.', False),
+])
+def test_color_filter_scopes_named_dee_and_negation(caption, expected):
+    assert bool(pipeline.color_only_match(caption, 'car_mechanisms')) is expected
+
+
 def test_gina_reposts_require_prior_approval_of_the_fabric_hood():
     now = datetime.datetime.now(datetime.timezone.utc)
     source = {'candidate': {'id': 'original'}, 'brand': 'BMW', 'model': 'GINA Light Visionary Model',
