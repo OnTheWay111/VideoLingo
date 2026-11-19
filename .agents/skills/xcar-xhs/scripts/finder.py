@@ -343,6 +343,7 @@ def normalize(tweet, car_re, dropped, require_car):
         "likes": to_int(tweet.get("favorite_count")),
         "replies": to_int(tweet.get("reply_count")),
         "reposts": to_int(tweet.get("retweet_count")),
+        "bookmarks": to_int(tweet.get("bookmark_count")),
         "views": to_int(tweet.get("view_count")),
         "text": (tweet.get("text") or "").replace("\n", " ").strip(),
         "media": video_media,

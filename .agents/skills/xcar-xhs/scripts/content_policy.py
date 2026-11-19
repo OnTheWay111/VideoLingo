@@ -7,6 +7,7 @@ import re
 
 SCORE_THRESHOLD = 70
 MIN_TOTAL_ENGAGEMENT = 100
+BRAND_SERIES = "brand_models"
 SCORE_RUBRIC = {
     "first_three_seconds": 25,
     "knowledge_point": 25,
@@ -39,14 +40,17 @@ def _count(value):
 
 
 def engagement_counts(item):
-    """返回候选的点赞、评论、转发数；兼容 X 原始字段和归一化字段。"""
+    """兼容旧候选的三项口径；品牌车型任务另计 X 收藏。"""
     candidate = item.get("candidate") if isinstance(item, dict) else None
     candidate = candidate if isinstance(candidate, dict) else (item or {})
-    return {
+    counts = {
         "likes": _count(candidate.get("likes", candidate.get("favorite_count"))),
         "replies": _count(candidate.get("replies", candidate.get("reply_count"))),
         "reposts": _count(candidate.get("reposts", candidate.get("retweet_count"))),
     }
+    if BRAND_SERIES in (candidate.get("topic_series_id"), (item or {}).get("topic_series_id")):
+        counts["bookmarks"] = _count(candidate.get("bookmarks", candidate.get("bookmark_count")))
+    return counts
 
 
 def engagement_total(item):
@@ -59,8 +63,9 @@ def engagement_rejection_reason(item, minimum=MIN_TOTAL_ENGAGEMENT):
     total = sum(counts.values())
     if total > minimum:
         return ""
-    return "互动总量 %d ≤ %d（点赞 %d + 评论 %d + 转发 %d）" % (
-        total, minimum, counts["likes"], counts["replies"], counts["reposts"])
+    return "互动总量 %d ≤ %d（点赞 %d + 评论 %d + 转发 %d%s）" % (
+        total, minimum, counts["likes"], counts["replies"], counts["reposts"],
+        (" + 收藏 %d" % counts["bookmarks"]) if "bookmarks" in counts else "")
 
 
 def normalized(value):

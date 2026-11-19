@@ -2,6 +2,7 @@
 import re
 from functools import lru_cache
 
+from content_policy import BRAND_SERIES
 from race_humor import RACE_TERMS, SERIES_ID as RACE_HUMOR, assess_race
 from topic_planner import PILLARS
 
@@ -25,7 +26,7 @@ SERIES = {
     'mountain_driving': ('能辨认哪台车、哪种山路场景？', r'mountain|canyon|touge|山路|山口|峠'),
     'small_car_space': ('座椅、车门或地板怎样改变可用空间？', r'fold|flat floor|sliding door|camper|折叠|侧滑门|空间'),
 }
-REAL_FOOTAGE_SERIES = {'rally_road_cars', 'regional_production_cars', 'car_mechanisms', 'screen_game_cars',
+REAL_FOOTAGE_SERIES = {BRAND_SERIES, 'rally_road_cars', 'regional_production_cars', 'car_mechanisms', 'screen_game_cars',
                       'classic_restoration', 'offroad_equipment', 'mountain_driving', 'rare_performance_wagons'}
 ROAD = re.compile(SERIES['rally_road_cars'][1], re.I)
 RACE = re.compile(
@@ -57,7 +58,7 @@ def named_models(series):
 
 def assess_series(series, text):
     """返回（匹配优先级，明确冲突原因）；模糊原帖继续参与画面审核。"""
-    if series not in SERIES:
+    if series not in SERIES and series != BRAND_SERIES:
         return 0, ''
     caption = re.sub(r'https?://\S+|@\w+', ' ', text or '')
     if series == RACE_HUMOR:
@@ -73,6 +74,8 @@ def assess_series(series, text):
         race = RACE.search(caption)
         if race or (re.search(r'\bwrc\b', caption, re.I) and re.search(r'\bonboard\b', caption, re.I)):
             return -1, '原帖明确为拉力赛车或赛事转播，未给出公路版依据'
+    if series == BRAND_SERIES:
+        return 0, ''
     names = named_models(series)
     model = bool(names and names.search(caption))
     cue = bool(re.search(SERIES[series][1], caption, re.I))

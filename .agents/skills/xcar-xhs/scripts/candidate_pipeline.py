@@ -14,11 +14,13 @@ from itertools import zip_longest
 from pathlib import Path
 
 import finder
+import brand_catalog
 from caption_models import caption_duplicate, model_index
 from candidate_pool import enqueue_finalized
 from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
                               content_digest, file_digest, validate_editorial_review)
-from content_policy import SCORE_THRESHOLD, content_duplicate, content_identity, normalize_brand
+from content_policy import (BRAND_SERIES, SCORE_THRESHOLD, content_duplicate, content_identity,
+                            engagement_total, normalize_brand, normalized)
 from finalize import apply_publish_content, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
@@ -204,6 +206,10 @@ EMPTY_PAGE_LIMIT = 2
 
 
 def next_search(state):
+    if state.get('plan', {}).get('brand_target'):
+        # 单车型只有一个名额，不能以首页已有批准作为翻页前提。
+        active = [q for q in state['queries'] if not q['done'] and q.get('empty_pages', 0) < EMPTY_PAGE_LIMIT]
+        return min(active, key=lambda q: q['pages'], default=None)
     streaks = state.get('empty_series_pages', {})
     available = [q for q in state['queries'] if streaks.get(q.get('series_id'), 0) < EMPTY_PAGE_LIMIT
                  or (q.get('explicit') and q['pages'] == 0)]
@@ -302,6 +308,8 @@ def review_request(state, out):
                              'fact_evidence': '',
                              'series_evidence': '', 'score_reasons': {}},
         }
+        if state['plan'].get('brand_target'):
+            requests[source_id]['series_question'] = '画面中哪些特征与名录来源能确认指定车型？'
         if state['plan'].get('editorial_review_version'):
             requests[source_id]['verification']['editorial'] = {
                 'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
@@ -335,7 +343,8 @@ def apply_reviews(state, path, out, registry):
             if not str(result.get('reason') or '').strip():
                 raise ValueError('淘汰必须填写原因')
             entry.update(status='rejected', reason=result['reason'])
-            registry['rejected'][source_id] = {'reason': result['reason'], 'at': now()}
+            if not state['plan'].get('brand_target'):
+                registry['rejected'][source_id] = {'reason': result['reason'], 'at': now()}
             record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
                          status='rejected', event_id='%s:%s:review' % (state['job_id'], source_id),
                          details={'reason': result['reason']},
@@ -346,6 +355,12 @@ def apply_reviews(state, path, out, registry):
         content_file = out / '.review-content.json'
         atomic_json(content_file, {source_id: result.get('publish', {})})
         content = load_publish(content_file)
+        target = state['plan'].get('brand_target')
+        if target:
+            if not brand_catalog.matches_identity(target, content[source_id]):
+                entry.update(status='rejected', reason='审核车型与本任务指定的品牌或车型不符')
+                continue
+            content[source_id].update(brand=target['brand'], model=target['model'])
         approved = copy.deepcopy(item)
         apply_publish_content([approved], content)
         approved['verification'] = {**result.get('verification', {}), 'status': 'approved',
@@ -409,6 +424,18 @@ def reconcile_approved(state, history, queue):
         brand = normalize_brand(item['brand'])
         reason = ('原帖已发布或已入池' if history.check(source_id=source_id) or existing else
                   duplicate['reason'] if duplicate else '同品牌每批最多一条' if brand in brands else '')
+        target = state['plan'].get('brand_target')
+        if target and not reason:
+            for record in queued:
+                if record['status'] not in WAITING_STATUSES:
+                    continue
+                other = record['item']
+                if brand_catalog.matches_identity(target, other):
+                    reason = '同车型已在候选池：' + record['source_id']
+                    break
+                if (other.get('verification') or {}).get('video_sha256') == entry['video_sha256']:
+                    reason = '不同原帖使用相同视频：' + record['source_id']
+                    break
         profile = incident_profile(item)
         if profile and profile['key'] in events:
             reason = reason or '已有同一正赛插曲：' + profile['key']
@@ -455,6 +482,20 @@ def write_manifest(state, out, history):
 
 def run_pipeline(args, backend=None):
     out = Path(args.out).resolve()
+    catalog_path = getattr(args, 'brand_catalog', None)
+    model = getattr(args, 'model', None)
+    if bool(catalog_path) != bool(model):
+        raise ValueError('--brand-catalog 与 --model 须一起使用')
+    target = None
+    if catalog_path:
+        catalog = brand_catalog.read_catalog(catalog_path)
+        target = next((row for row in catalog['models'] if normalized(row['model']) == normalized(model)), None)
+        if not target:
+            raise ValueError('名录没有该车型：' + model)
+        if any(getattr(args, key, None) for key in ('series', 'race_league', 'wrc_post', 'wrc_brief')):
+            raise ValueError('品牌历代车型须使用独立任务')
+        out = brand_catalog.model_dir(out, target)
+        args.top = args.min_selected = 1
     out.mkdir(parents=True, exist_ok=True)
     history = PublishedHistory(args.publish_history)
     queue = PublicationQueue(history_path=history.path)
@@ -470,6 +511,8 @@ def run_pipeline(args, backend=None):
         registered = next((job for job in registry['jobs'].values() if job.get('out_dir') == str(out)), None)
         if registered and registered.get('checkpoint'):
             state = copy.deepcopy(registered['checkpoint'])
+        if target and state and state['plan'].get('brand_target') != target:
+            raise ValueError('恢复任务不能更换目标车型资料，请核对名录或使用新的任务目录')
         # 定稿门槛：显式 --min-selected 优先，其次沿用任务已存的值，最后回落默认 3。
         min_selected = getattr(args, 'min_selected', None)
         if min_selected is None:
@@ -484,14 +527,17 @@ def run_pipeline(args, backend=None):
             if (out / 'manifest.json').exists():
                 raise ValueError('目录已有其他任务 manifest，请用新的候选任务目录')
             inventory_audit = queue.audit()
-            plan = build_topic_plan(history.records(), queue.records(), list(registry['jobs'].values()))
-            plan['series_episode'] = None  # 发布期数由发布计划分配。
-            plan['prompt'] = '自动选题｜%s｜%s｜候选生产' % (plan['pillar_label'], plan['series_label'])
-            selected = getattr(args, 'series', None)
-            if not selected and not args.query and args.top > 1:
-                selected = ','.join(plan['refill_series'][:args.top])
-            if selected:
-                plan = apply_series_override(plan, selected)
+            if target:
+                plan = brand_catalog.model_plan(target)
+            else:
+                plan = build_topic_plan(history.records(), queue.records(), list(registry['jobs'].values()))
+                plan['series_episode'] = None  # 发布期数由发布计划分配。
+                plan['prompt'] = '自动选题｜%s｜%s｜候选生产' % (plan['pillar_label'], plan['series_label'])
+                selected = getattr(args, 'series', None)
+                if not selected and not args.query and args.top > 1:
+                    selected = ','.join(plan['refill_series'][:args.top])
+                if selected:
+                    plan = apply_series_override(plan, selected)
             plan['editorial_review_version'] = EDITORIAL_REVIEW_VERSION
             state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'limit', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
@@ -499,7 +545,7 @@ def run_pipeline(args, backend=None):
                                                   'series_id': (plan.get('query_series') or {}).get(q)
                                                   or plan['series_id']}
                                                  for q in make_queries(plan)], 'created_at': now()}
-            if not getattr(args, 'series', None) and not args.query:
+            if not target and not getattr(args, 'series', None) and not args.query:
                 state['fallback_series'] = [sid for sid in plan['ranked_series']
                                             if sid not in plan['series_id'].split('+')]
             record_event('candidate', 'topic_strategy', state['job_id'],
@@ -666,6 +712,15 @@ def run_pipeline(args, backend=None):
                                           if items.get(sid, {}).get('status') == 'approved'
                                           and items[sid].get('series_id') == RACE_HUMOR)
                 records = latest_records(history.records())
+                target = state['plan'].get('brand_target')
+                if target:
+                    existing = next((e for e in queued if e['status'] in WAITING_STATUSES
+                                     and brand_catalog.matches_identity(target, e['item'])), None)
+                    if existing:
+                        return finish('pool_conflict', '同车型已在候选池：' + existing['source_id'])
+                    if any(brand_catalog.matches_identity(target, r) and
+                           content_duplicate(content_identity(r), [r], statuses=ACTIVE_STATUSES) for r in records):
+                        return finish('recently_published', '同车型在有效发布历史的 30 天内')
                 models = model_index(records, queued, checked_at)
                 recent = recent_mechanisms(records, queued, checked_at, approved)
                 events = {}
@@ -690,6 +745,8 @@ def run_pipeline(args, backend=None):
                     if fresh or next_search(state):
                         candidates = fresh
                 candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
+                if target:
+                    candidates.sort(key=lambda e: -engagement_total(e['item']))
                 if state.get('race_leagues') == ['wrc']:
                     candidates.sort(key=lambda e: wrc_clip_rank(e['item']['candidate']))
                 if state.get('wrc_brief'):
@@ -798,9 +855,13 @@ def run_pipeline(args, backend=None):
                     if not tweet.get("id"):
                         continue
                     verified_link = query.get('family') == 'linked' and bool(state.get('wrc_brief'))
-                    candidate = finder.normalize(tweet, car_pattern, [], not verified_link)
+                    if target and not brand_catalog.matches_caption(target, tweet.get('text') or ''):
+                        continue
+                    candidate = finder.normalize(tweet, car_pattern, [], not (target or verified_link))
                     if not candidate:
                         continue
+                    if target:
+                        candidate['topic_series_id'] = BRAND_SERIES
                     source_id = str(candidate['id'])
                     existing = state['items'].get(source_id)
                     if series in state.get('series_skips', {}).get(source_id, {}):
@@ -828,6 +889,8 @@ def run_pipeline(args, backend=None):
                         screen_caption(entry, state, models, recent, events)
                         if entry['status'] == 'discovered':
                             sources.append(source_id)
+                if target:
+                    query['empty_pages'] = 0 if sources else query.get('empty_pages', 0) + 1
                 rotate_brief_family(state, query, sources)
                 streaks = state.setdefault('empty_series_pages', {})
                 streaks[series] = 0 if sources else streaks.get(series, 0) + 1
@@ -857,6 +920,8 @@ def run_pipeline(args, backend=None):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--brand-catalog', help='已核实的品牌车型名录 JSON；--out 为品牌任务根目录')
+    parser.add_argument('--model', help='本次补池的名录正式车型名，每个车型独立入池一条')
     parser.add_argument('--wrc-post', action='append', default=[], help='与简报事件交叉核对的原帖链接')
     parser.add_argument('--wrc-brief', help='已查证的单分站赛段简报 JSON')
     parser.add_argument('--race-league', choices=sorted(LEAGUE_QUERIES))
@@ -892,6 +957,8 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.brand_catalog:
+        args.top = args.min_selected = 1
     if args.top < (args.min_selected or 3) or args.max_pages < 1 or args.max_downloads < 3 or args.max_seconds < 1:
         parser.error('目标条数不能小于 --min-selected（默认 3）；页数、下载和时间预算必须为正且下载预算至少 3')
     if args.max_duration <= 0 or args.min_likes < 0 or args.min_reposts < 0 or args.limit < 1 or args.delay < 0:

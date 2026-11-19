@@ -1,6 +1,6 @@
 ---
 name: xcar-xhs
-description: 按一句提示词或账号选题策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、断点递补、核验后只保存候选池；用户明确要求发布时复用本机 Chrome Default 上传并发布。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
+description: 按指定品牌从创立至今逐车型选一条视频入池，也可按提示词或账号策略自动搜索、排序、下载并抽帧核验 X/Twitter 汽车视频，支持小红书自动选题、断点递补、核验后只保存候选池；用户明确要求发布时复用本机 Chrome Default 上传并发布。Use when the user wants to find X car videos, automatically choose Xiaohongshu car topics, maintain a car account, skip already-published videos, or publish car videos to Xiaohongshu.
 license: MIT
 ---
 
@@ -8,11 +8,13 @@ license: MIT
 
 把一句自然语言提示词或内置账号策略变成「库存感知自动选题 → 增量 X 检索 → 下载前去重 → 下载抽帧 → Agent 核验与文案 → 可恢复定稿 → 只保存跨批次候选池」的流水线。默认入池即完成，不生成发布计划、不启动小红书浏览器；仅用户明确要求发布时进入独立发布流程。用户没有给选题时直接使用 `candidate_pipeline.py`，不要先追问主题；通用 X 主题筛选和其他平台 URL 素材核验请使用 `web-content-fetcher`，本 Skill 只负责汽车场景。
 
-**每次正式候选任务默认核验并入选至少 3 个视频，全部保存到持久队列；默认不发布。** 每条素材的 X 点赞数 + 评论数 + 转发数必须严格大于 100；等于 100 也淘汰，缺失互动字段按 0 计算。原帖明确以已知车型为主体时，在下载前核对排队中、已计划的候选（含保留项）和最近 30 天的有效发布历史；记录命中的车型、来源及原帖 ID。比较、版本不清和只有链接或账号名的素材保留审核机会。该互动门槛在下载前和入池前重复校验，不得绕过。下载失败、超时、互动不足、选题不达标、画面不合格、重复都只淘汰当前候选，不减少当批核验数量要求；必须继续翻页、补充同义检索式并扩大同栏目车型/场景搜索，递补到满足当批门槛后才能定稿。不得用低分或禁选素材凑数。素材存量紧张时可用 `--min-selected 1`（配合 `--top 1`）做小批补池，评分、互动、时长、禁选和去重标准一律不变。
+用户指定品牌并要求覆盖全部车型（如“按本田历代车型各找一条”）时，直接走下方「品牌历代车型」，由 Agent 建名录并逐车型执行。仅询问某款车时沿用原有检索入口。
+
+**常规候选任务默认核验并入选至少 3 个视频，全部保存到持久队列；默认不发布。** 常规模式每条素材的 X 点赞数 + 评论数 + 转发数必须严格大于 100。品牌历代车型另计收藏数。等于 100 也淘汰，缺失互动字段按 0 计算。原帖明确以已知车型为主体时，在下载前核对排队中、已计划的候选（含保留项）和最近 30 天的有效发布历史；记录命中的车型、来源及原帖 ID。比较、版本不清和只有链接或账号名的素材保留审核机会。该互动门槛在下载前和入池前重复校验，不得绕过。下载失败、超时、互动不足、选题不达标、画面不合格、重复都只淘汰当前候选，不减少当批核验数量要求；必须继续翻页、补充同义检索式并扩大同栏目车型/场景搜索，递补到满足当批门槛后才能定稿。不得用低分或禁选素材凑数。素材存量紧张时可用 `--min-selected 1`（配合 `--top 1`）做小批补池，评分、互动、时长、禁选和去重标准一律不变。
 
 | 能力 | 工具 | 说明 |
 |---|---|---|
-| 搜索 X（带登录态） | `xfetch` skill（`../xfetch/scripts/xfetch.py`，twikit） | 输出 JSONL，含 `favorite_count` / `reply_count` / `retweet_count` / `view_count` / `media` |
+| 搜索 X（带登录态） | `xfetch` skill（`../xfetch/scripts/xfetch.py`，twikit） | 输出 JSONL，含 `favorite_count` / `reply_count` / `retweet_count` / `bookmark_count` / `view_count` / `media` |
 | 统一 Web 会话 | `web-content-fetcher/scripts/web_session.py` | 固定复用本机 Chrome `Default`，临时 X 凭据自动清理 |
 | 下载媒体 | `yt-dlp` | 使用同一 Chrome `Default` 会话，X 视频自动合并成 mp4 |
 | 抽帧核验 | `ffmpeg` | 每条约 2 帧，供 Agent 用 `read_image` 判断是否真是汽车 |
@@ -87,6 +89,36 @@ python3 .venv-xfetch/bin/python .agents/skills/xfetch/scripts/xfetch.py auth che
 
 **最少入选规则：`--top` 表示目标核验入选数，不是单次发布数；默认门槛 `--min-selected` 为 3。** `candidate_pipeline.py` 支持 `--min-selected N`（默认 3，最小 1，且 `--top` 不得小于它）：常规任务保持 3，素材存量紧张的小批补池可显式 `--min-selected 1 --top 1`，但评分、互动、时长、禁选与去重门槛不变。finder 会越过下载失败和超时候选自动递补；候选耗尽仍不足时以退出码 3 报告未完成。此时应增加 `--pages`、补充同义 `--query` 或扩大同栏目检索后继续，不得把不达门槛的结果交给定稿或入队。`--dry-run` 只预演榜单，不视为完成核验名单；正式发布不受每日一条的数量限制。
 
+### 品牌历代车型
+
+用户只需给品牌名，例如「按宝马从创立到今天的所有车型，每款选一个视频入候选池」。Agent 负责检索车型史、建表、逐款审核及补池。
+
+1. 先查品牌官方历史档案、博物馆车型索引和各市场当前车型页，按年代交叉核对首款、停产及在售车型。覆盖该品牌正式命名并推出的实车，包括有独立名称的商用车、赛车及概念车。同车地区译名并入别名；年款、换代和配置沿用同一正式车型名时合并。独立品牌分别统计。保存品牌成立年、截至本次检索的日期、逐车型首发年和可核对的来源。资料只覆盖部分年代或市场时在 `coverage_gaps` 记录具体缺口，继续查证。
+2. 在本次品牌任务根目录保存 `brand_catalog.json`。字段如下，示例名称和链接均为占位。用第一条命令先列出按首发年排序的完整名录、各车型现有库存和任务目录，再开始下载。已有合格排队素材计入覆盖，并在交付表注明原帖 ID 和“池内已有”。
+3. Agent 按表逐款调用第二条命令。每款独立保留一个名额，按已返回的原帖四项总互动由高到低尝试，**点赞 + 转发 + 收藏 + 评论 > 100**。缺失计数按零，100 淘汰，不设单项点赞下限。收到 `awaiting_review` 后查看真实画面和名录出处，在 `series_evidence` 写清可辨认该车型的细节，使用名录正式名或已核实的别名填写审核，并在同一条命令追加 `--review-file <该车型的审核文件>`。错车、禁选、时长、事实或评分未过均须在该车型内递补。
+4. 对耗尽的车型用同一命令追加有依据的车型别名或史料线索 `--query`，必要时增加页数或下载预算。某款确实无合格视频、命中近期发布或处于已计划状态时，记录原因并继续其他车型。最后重跑第一条命令，交付逐车型清单、四项互动、原帖及本地视频，分别统计新增和已有。只有资料缺口为空且每一行都有实际 queued 视频时，才报告品牌全覆盖；其余情况逐项列出缺口及恢复目录。默认入池后结束。
+
+```json
+{
+  "brand": "品牌正式名",
+  "brand_aliases": ["其他语言品牌名"],
+  "founded_year": 1950,
+  "as_of": "2026-11-20",
+  "source": "https://example.com/brand-history",
+  "coverage_gaps": [],
+  "models": [
+    {"model": "车型正式名", "first_year": 1960, "aliases": ["地区车型名"], "source": "https://example.com/model-archive"}
+  ]
+}
+```
+
+```bash
+python3 .agents/skills/xcar-xhs/scripts/brand_catalog.py --brand '品牌正式名' --out work/品牌历代车型
+python3 .agents/skills/xcar-xhs/scripts/candidate_pipeline.py --brand-catalog work/品牌历代车型/brand_catalog.json --model '车型正式名' --out work/品牌历代车型
+```
+
+### 常规自动补池
+
 自动选题并生产候选（默认只入池，不发布）：
 
 ```bash
@@ -151,7 +183,7 @@ python3 .../finder.py \
 | `reposts` | `retweet_count` | 按转发数降序 |
 | `views` | `view_count` | 按播放量降序 |
 
-服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。**所有候选始终执行硬门槛：点赞 + 评论 + 转发 > 100；总数等于 100 或字段缺失导致总数不足时，下载前写入 `engagement_skipped` 并淘汰。** `--min-likes`、`--min-reposts` 是在总互动硬门槛之外的可选独立门槛；只有用户显式设置正数时才额外过滤。互动量不占 100 分评分，Agent 仍须只让核验后达到 70 分的素材进入最终入选；入池时会再次校验总互动硬门槛。
+服务端预过滤：`--min-likes N` 会追加 `min_faves:N`；`--since YYYY-MM-DD` 追加 `since:`。`--type top` 用 X 的综合互动榜做初排。**常规选题执行硬门槛：点赞 + 评论 + 转发 > 100；总数等于 100 或字段缺失导致总数不足时，下载前写入 `engagement_skipped` 并淘汰。** `--min-likes`、`--min-reposts` 是在总互动硬门槛之外的可选独立门槛；只有用户显式设置正数时才额外过滤。互动量不占 100 分评分，Agent 仍须只让核验后达到 70 分的素材进入最终入选；入池时会再次校验总互动硬门槛。
 
 ## finder 底层选项（正常候选生产使用上方统一入口）
 
@@ -384,7 +416,7 @@ python3 .agents/skills/xcar-xhs/scripts/monitor_telemetry.py record \
 
 候选阶段为 `topic_strategy`、`search_filter`、`download_frames`、`visual_fact_review`、`copy_finalize_enqueue`；发布阶段为 `plan_preflight`、`upload_submit`、`result_verify`、`link_recovery`。也可向本地服务 `POST /api/usage` 提交同名 JSON 字段。只记录真实 usage；暂时拿不到的阶段保持“未采集”。`total_tokens` 是汇总口径，缓存输入和推理 Token 作为子集展示，不再重复相加；失败调用只要 provider 返回了 usage 也应记录。
 
-## 候选任务完成条件（防止审核交接遗漏）
+## 常规候选任务完成条件（品牌逐车型任务按品牌覆盖表验收）
 
 `awaiting_review` 是交给当前 Agent 的内部步骤，不是等待用户，也不是可交付的终态。收到后必须在本轮继续读审核请求、查看画面、填写真实证据并恢复同一任务；不得仅汇报“剩余待核验”就结束。退出码 3 须结合回执状态判断，不能当作统一失败。
 
@@ -395,7 +427,7 @@ python3 .agents/skills/xcar-xhs/scripts/monitor_telemetry.py record \
 
 恢复被中断的任务前先核对原进程、回执和任务状态，避免并行重复运行。同名文件先比较原帖媒体 ID、SHA256 与画面；同一媒体被多帖复用只算一条，不能直接推断文件错配，也不能凑足三条。不校验转载许可，不要求 rights_evidence 或 rights_source；保留原帖与事实来源，但不得把未核验许可写成已获授权。
 
-## 连续无合格结果时自动换选题
+## 常规选题连续无合格结果时自动换选题
 
 每系列独立计数。成功返回的搜索页经互动、原帖、系列和车型初筛后没有新增可下载原帖，记为空搜；有新候选即清零，搜索失败不计。连续空搜 2 页后跳过该系列其余词，自动任务依库存顺序在同栏目继续换题，保留已通过素材和整个任务的累计预算。显式指定系列只在所选范围内搜索；新的补充词可重新试搜。
 
@@ -405,7 +437,7 @@ python3 .agents/skills/xcar-xhs/scripts/monitor_telemetry.py record \
 
 切换后继续搜索、AI 审核、递补和纯入池流程，直到至少 3 条不同的合格素材实际入池。已有合格素材保留审核证据，不因换系列丢弃；需要合并时使用保留逐条系列来源并通过相同门禁的定稿流程，不手工绕过入池校验。所有系列均已合理尝试或遇到明确外部阻塞时，报告覆盖范围和具体缺口；不得降低评分、禁选或去重标准。默认不发布。
 
-## Agent 工作流（重要）
+## 常规选题 Agent 工作流（品牌名录按逐车型流程执行）
 
 1. 自动选题并保存候选池时，使用 `candidate_pipeline.py --out <新任务目录>`；同目录再次调用即恢复，默认不发布。用户指定主题时仍可使用 finder 手动检索，最后必须补齐同等审核证据并通过纯入池门禁。
 2. X 登录态固定为 Chrome Default。登录失败按错误提示处理，不另选浏览器或打印凭据。
