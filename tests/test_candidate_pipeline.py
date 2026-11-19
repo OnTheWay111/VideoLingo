@@ -1189,7 +1189,8 @@ def test_race_humor_requires_real_competition_and_incident_evidence(tmp_path):
     initial = json.loads(Path(args.review_file).read_text())
     editorial = initial['items']['3']['verification']['editorial']
     assert 'race_event' in pipeline.run_pipeline(args, backend)['error']
-    editorial.update(race_event='测试分站正赛', race_phase='qualifying', race_source_url='https://example.com/race/report',
+    editorial.update(race_incident={'key': 'indycar-2024-barber-mannequin', 'anchors': [['Barber'], ['mannequin fell']]},
+                     race_event='测试分站正赛', race_phase='qualifying', race_source_url='https://example.com/race/report',
                      incident_evidence='测试样例：转播第 8 圈，赛车停错维修位后驶回，车号与样例来源一致')
     Path(args.review_file).write_text(json.dumps(initial))
     assert '只接受正赛' in pipeline.run_pipeline(args, backend)['error']
@@ -1214,3 +1215,55 @@ def test_model_in_complete_sentence_and_distinct_named_edition():
     assert not caption_duplicate('A DB5. Inspired by the DB5 Goldfinger Continuation.', index)
     assert not caption_duplicate('The first five DB5 cars have rolled off the line.', index)
     assert caption_duplicate('In association with EON, our 25 DB5 Goldfinger Continuation cars recently started production.', index)
+
+
+def test_race_event_download_gate_and_query_rotation(tmp_path):
+    args = args_for(tmp_path, series='race_humor')
+    captions = ['IndyCar mannequin fell at Barber', 'Another view: IndyCar mannequin fell at Barber',
+                'IndyCar: a snake at Barber', 'Indy500 practice on Peacock', '#Q3 F1 traffic']
+    backend = FakeBackend([([dict(tweet(i), text=t) for i, t in enumerate(captions, 1)], 'cursor'),
+                           ([dict(tweet(6), text='New F1 race day incident')], None)])
+    assert pipeline.run_pipeline(args, backend)['awaiting_review'] == 1
+    args.review_file = review_all(args.out)
+    review = json.loads(Path(args.review_file).read_text())
+    review['items']['1']['verification']['editorial'].update(
+        race_event='2024 IndyCar Barber', race_phase='race', race_source_url='https://example.com/barber',
+        incident_evidence='同一分站，天桥人偶掉落，转播秒数与来源对应。',
+        race_incident={'key': 'indycar-2024-barber-falling-mannequin',
+                       'anchors': [['Barber'], ['mannequin'], ['fell', 'falling']]})
+    Path(args.review_file).write_text(json.dumps(review))
+    result = pipeline.run_pipeline(args, backend)
+    assert result['race_event_skipped'] == 1
+    assert result['series_mismatch_skipped'] == 2
+    assert result['covered_race_queries'] == 2
+    assert backend.downloads == ['1', '6'] and backend.searches[0] != backend.searches[1]
+    state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
+    assert state['items']['3']['status'] == 'discovered'
+    assert state['items']['2']['race_duplicate']['source_id'] == '1'
+
+
+def test_race_event_scope_and_legacy_evidence():
+    from race_humor import caption_incident, race_index
+    item = dict(topic_series_id='race_humor', title='巴伯赛道人偶意外掉落',
+                verifiable_fact='2024 年印地赛车巴伯站的人偶掉落。')
+    index = race_index([], [{'source_id': 'old', 'status': 'queued', 'item': item}], [])
+    assert caption_incident('The mannequin fell during the Barber IndyCar race.', index)['source_id'] == 'old'
+    for text in ['IndyCar at Barber', 'The mannequin fell at another IndyCar track', 'New mannequin at Barber', '2025 IndyCar: the mannequin fell',
+                 'First Georgina, now a snake. IndyCar race.']:
+        assert caption_incident(text, index) is None
+    assert not race_index([], [{'source_id': 'old', 'status': 'withdrawn', 'item': item}], [])
+    for text in ['Indy500 practice on Peacock', 'F1 #FP1', 'F1 Q2 replay', '赛车排位', '车手摆拍', '恶搞短片']:
+        assert pipeline.assess_series('race_humor', text)[1]
+    assert not pipeline.assess_series('race_humor', 'F1: this is not a prank')[1]
+
+
+def test_race_event_keeps_references_out_of_duplicate_counts():
+    from race_humor import race_index, caption_incident
+    text = ("I JUST DROVE AN F1 CAR! Today I drove the same Lotus Kimi drove in Abu Dhabi "
+            "with his leave me alone moment. #RacingSchool")
+    assert '个人试驾' in pipeline.assess_series('race_humor', text)[1]
+    profile = {'key': 'f1-2012-abudhabi-radio', 'anchors': [['Abu Dhabi'], ['leave me alone']]}
+    item = {'topic_series_id': 'race_humor', 'race_incident': profile, 'candidate': {'id': 'old'}}
+    index = race_index([], [], [], [item])
+    assert caption_incident('Abu Dhabi: leave me alone', index)['origin'] == '其他在制任务已核验'
+    assert not caption_incident('This reminds me of Abu Dhabi: leave me alone', index)

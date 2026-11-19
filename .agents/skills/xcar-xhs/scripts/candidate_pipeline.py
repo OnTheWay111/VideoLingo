@@ -27,7 +27,8 @@ from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
-from race_humor import RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR
+from race_humor import (RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
+                        covered_queries, incident_profile, race_index)
 from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
 
@@ -192,7 +193,8 @@ def next_search(state):
     streaks = state.get('empty_series_pages', {})
     available = [q for q in state['queries'] if streaks.get(q.get('series_id'), 0) < EMPTY_PAGE_LIMIT
                  or (q.get('explicit') and q['pages'] == 0)]
-    return select_query(available, state['query_yield'], state['items'])
+    covered = state.get('covered_race_queries', {})
+    return select_query([q for q in available if q['query'] not in covered], state['query_yield'], state['items'])
 
 
 def extend_refill(state):
@@ -209,11 +211,16 @@ def extend_refill(state):
     return True
 
 
-def screen_caption(entry, state, models, mechanisms):
+def screen_caption(entry, state, models, mechanisms, race_events=None):
     if entry['status'] != 'discovered':
         return
     caption = entry['item']['candidate'].get('text', '')
     series = entry.get('series_id') or state['plan']['series_id']
+    if series == RACE_HUMOR and race_events:
+        match = caption_incident(caption, race_events)
+        if match:
+            entry.update(status='skipped', race_duplicate=match, reason='下载前同一正赛插曲：' + match['key'])
+            return
     color = color_only_match(caption, series)
     if color:
         entry.update(status='skipped', color_only=color, reason='汽车机关图鉴：原帖仅展示车身变色')
@@ -257,7 +264,10 @@ def review_request(state, out):
                 'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
             }
             if series == RACE_HUMOR:
-                requests[source_id]['verification']['editorial'].update(dict.fromkeys(RACE_FIELDS, ''))
+                editorial = requests[source_id]['verification']['editorial']
+                editorial.update(dict.fromkeys(RACE_FIELDS, ''))
+                if state.get('race_incident_version'):
+                    editorial['race_incident'] = {'key': '', 'anchors': []}
             if series == 'rally_road_cars' and state['plan']['strategy_version'] >= 10:
                 requests[source_id]['verification']['editorial']['road_version_detail'] = ''
     atomic_json(out / 'review_request.json', {'job_id': state['job_id'], 'topic_plan': state['plan'],
@@ -313,6 +323,9 @@ def apply_reviews(state, path, out, registry):
             reason = '核验评分低于 %d' % SCORE_THRESHOLD
         elif state['plan'].get('editorial_review_version'):
             editorial = validate_editorial_review(approved)
+            if (item_series == RACE_HUMOR and state.get('race_incident_version')
+                    and not (approved['verification'].get('editorial') or {}).get('race_incident')):
+                raise ValueError('须在审核中填写 race_incident 供后续事件去重')
             if item_series == ACTION_SERIES and editorial['opening_action_at_sec'] is None:
                 reason = '汽车机关图鉴前 3 秒未见关键动作'
         if reason:
@@ -338,6 +351,7 @@ def reconcile_approved(state, history, queue):
     records, queued = latest_records(history.records()), queue.records()
     approved = sorted((e for e in state['items'].values() if e['status'] == 'approved'),
                       key=lambda e: candidate_sort_key(e['item']))
+    events = race_index(records, queued, []) if any(e['item'].get('topic_series_id') == RACE_HUMOR for e in approved) else {}
     for entry in approved:
         item = entry['item']
         source_id = str(item['candidate']['id'])
@@ -352,12 +366,17 @@ def reconcile_approved(state, history, queue):
         brand = normalize_brand(item['brand'])
         reason = ('原帖已发布或已入池' if history.check(source_id=source_id) or existing else
                   duplicate['reason'] if duplicate else '同品牌每批最多一条' if brand in brands else '')
+        profile = incident_profile(item)
+        if profile and profile['key'] in events:
+            reason = reason or '已有同一正赛插曲：' + profile['key']
         reason = reason or reviewed_series_conflict(item)
         if reason:
             entry.update(status='rejected', reason=reason)
         else:
             accepted.append(item)
             brands.add(brand)
+            if profile:
+                events[profile['key']] = profile
     return accepted
 
 
@@ -380,6 +399,9 @@ def write_manifest(state, out, history):
                 'series_mismatch_skipped': [{'source_id': sid, 'series_id': series, 'reason': reason}
                                             for sid, skipped in state.get('series_skips', {}).items()
                                             for series, reason in skipped.items()],
+                'race_event_skipped': [{'source_id': key, 'match': entry['race_duplicate']}
+                                       for key, entry in state['items'].items() if 'race_duplicate' in entry],
+                'covered_race_queries': state.get('covered_race_queries', {}),
                 'color_only_skipped': [{'source_id': key, 'match': entry['color_only']}
                                        for key, entry in state['items'].items() if 'color_only' in entry],
                 'recent_mechanism_skipped': [{'source_id': key, 'match': entry['recent_duplicate']}
@@ -430,7 +452,7 @@ def run_pipeline(args, backend=None):
             plan['editorial_review_version'] = EDITORIAL_REVIEW_VERSION
             state = {'inventory_held': len(inventory_audit), 'settings': {key: getattr(args, key) for key in ('sort', 'type', 'limit', 'since', 'min_likes', 'min_reposts', 'max_duration')}, 'job_id': uuid.uuid4().hex, 'status': 'searching', 'phase': 'collecting', 'target': args.top, 'min_selected': min_selected,
                      'history_file': str(history.path), 'plan': plan, 'items': {}, 'pages': 0,
-                     'downloads': 0, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,
+                     'downloads': 0, 'race_incident_version': 1, 'queries': [{'query': q, 'cursor': None, 'pages': 0, 'done': False,
                                                   'series_id': (plan.get('query_series') or {}).get(q)
                                                   or plan['series_id']}
                                                  for q in make_queries(plan)], 'created_at': now()}
@@ -478,6 +500,8 @@ def run_pipeline(args, backend=None):
                       'empty_series_pages': state.get('empty_series_pages', {}),
                       'model_duplicates_skipped': sum('model_duplicate' in e for e in state['items'].values()),
                       'series_mismatch_skipped': len(state.get('series_skips', {})),
+                      'race_event_skipped': sum('race_duplicate' in e for e in state['items'].values()),
+                      'covered_race_queries': len(state.get('covered_race_queries', {})),
                       'color_only_skipped': sum('color_only' in e for e in state['items'].values()),
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
@@ -555,17 +579,32 @@ def run_pipeline(args, backend=None):
                 queued = queue.records()
                 occupied = {e['source_id'] for e in queued}
                 checked_at = datetime.datetime.now(datetime.timezone.utc)
+                other_approved = []
                 for job_id, job in registry['jobs'].items():
-                    if job_id != state['job_id']:
-                        occupied.update(reserved_source_ids(job, checked_at))
+                    if job_id == state['job_id']:
+                        continue
+                    reserved = reserved_source_ids(job, checked_at)
+                    occupied.update(reserved)
+                    items = (job.get('checkpoint') or {}).get('items', {})
+                    other_approved.extend(items[sid]['item'] for sid in reserved
+                                          if items.get(sid, {}).get('status') == 'approved'
+                                          and items[sid].get('series_id') == RACE_HUMOR)
                 records = latest_records(history.records())
                 models = model_index(records, queued, checked_at)
                 recent = recent_mechanisms(records, queued, checked_at, approved)
+                events = {}
+                if any(q.get('series_id') == RACE_HUMOR for q in state['queries']):
+                    events = race_index(records, queued, approved, other_approved)
+                    state['covered_race_queries'] = covered_queries(state['queries'], state['items'], events)
                 candidates = [e for e in state['items'].values() if e['status'] in ('discovered', 'downloaded')]
                 for entry in candidates:
                     screen_series(entry, state)
-                    screen_caption(entry, state, models, recent)
+                    screen_caption(entry, state, models, recent, events)
                 candidates = [entry for entry in candidates if entry['status'] != 'skipped']
+                if state.get('covered_race_queries'):
+                    fresh = [e for e in candidates if e.get('race_query') not in state['covered_race_queries']]
+                    if fresh or next_search(state):
+                        candidates = fresh
                 candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
                 if candidates:
                     # 每次准备补足目标所需的审核任务，然后交给 Agent。
@@ -629,6 +668,8 @@ def run_pipeline(args, backend=None):
                         except Exception as exc:
                             entry.update(status='frame_failed', reason=str(exc), retryable=True)
                         checkpoint()
+                        if pending and entry.get('series_id') == RACE_HUMOR:
+                            break  # 先审这一幕，再决定同页转载是否还需要下载。
                     if pending:
                         return finish('awaiting_review')
                     continue
@@ -669,6 +710,9 @@ def run_pipeline(args, backend=None):
                     if series in state.get('series_skips', {}).get(source_id, {}):
                         continue
                     if existing and not existing.get('series_mismatch'):
+                        if (series == RACE_HUMOR and existing['status'] == 'discovered'
+                                and existing.get('race_query') in state.get('covered_race_queries', {})):
+                            existing['race_query'] = query['query']
                         continue
                     engagement_reason = finder.engagement_filter_reason(
                         candidate, args.min_likes, args.min_reposts)
@@ -681,9 +725,11 @@ def run_pipeline(args, backend=None):
                                                   'reason': reason,
                                                   'series_id': series, 'item': {'candidate': candidate}}
                     entry = state['items'][source_id]
+                    if series == RACE_HUMOR:
+                        entry['race_query'] = query['query']
                     if not reason:
                         screen_series(entry, state)
-                        screen_caption(entry, state, models, recent)
+                        screen_caption(entry, state, models, recent, events)
                         if entry['status'] == 'discovered':
                             sources.append(source_id)
                 streaks = state.setdefault('empty_series_pages', {})

@@ -189,6 +189,9 @@ PILLARS = {
                 "id": "race_humor",
                 "label": "正赛中的自然趣事",
                 "query_groups": (
+                    '("alone" OR "only car" OR "on his own") (Hamilton OR Lewis) (grid OR restart) (Hungary OR HungarianGP OR Hungaroring)',
+                    '("pace car" OR "pacecar") (barrels OR "pit wall") (Phoenix OR NASCARChampionship)',
+                    '("leave me alone" OR "I know what") (Kimi OR Raikkonen) (AbuDhabiGP OR "Abu Dhabi" OR Lotus)',
                     '("Button" "China" OR "Hamilton" "Malaysia") ("wrong pit" OR "wrong garage" OR "wrong team") -gameplay -parody',
                     '(from:F1 OR from:IndyCar OR from:NASCAR) ("wrong pit" OR "wrong box" OR "wrong pit box") -parody -prank -gameplay',
                     '(from:FIAWEC OR from:OfficialWRC OR from:NASCAR) ("unexpected visitor" OR "pit stop confusion" OR "funny moment") -staged -spoof',

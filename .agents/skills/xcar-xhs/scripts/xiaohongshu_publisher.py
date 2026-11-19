@@ -126,7 +126,11 @@ def topic_metadata(item):
         "title_detail", "verifiable_fact", "fact_source", "discussion_question",
         "score", "score_breakdown",
     )
-    return {key: item[key] for key in fields if key in item}
+    metadata = {key: item[key] for key in fields if key in item}
+    incident = item.get("race_incident") or ((item.get("verification") or {}).get("editorial") or {}).get("race_incident")
+    if incident:
+        metadata["race_incident"] = incident
+    return metadata
 
 
 def prepare_item(item, topic_plan):
