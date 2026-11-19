@@ -328,6 +328,7 @@ def build_topic_plan(records, queue_records=None, reservations=None, now=None):
             pillar["label"], series["label"], episode, pillar["duration"]),
         "queries": queries,
         "refill_series": [pillar["series"][i]["id"] for i in ranked[:3]],
+        "ranked_series": [pillar["series"][i]["id"] for i in ranked],
         "score_threshold": SCORE_THRESHOLD,
         "score_rubric": SCORE_RUBRIC,
         "source_engagement": "weak_reference_only",

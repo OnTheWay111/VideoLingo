@@ -32,6 +32,7 @@ from web_session import (
     ytdlp_session_args,
 )
 from publish_history import PublishedHistory, default_history_path
+from caption_models import caption_duplicate, model_index
 from content_policy import MIN_TOTAL_ENGAGEMENT, engagement_rejection_reason, engagement_total
 from topic_planner import build_topic_plan
 from topic_policy import color_only_match, partition_forbidden_topics
@@ -834,8 +835,11 @@ def main():
     topic_skipped = []
     if args.xiaohongshu:
         ranked, topic_skipped = partition_forbidden_topics(ranked)
-        recent = recent_mechanisms(history.records(), PublicationQueue(history_path=history.path).records(),
-                                   datetime.datetime.now(datetime.timezone.utc))
+        records = {r['source_id']: r for r in history.records() if r.get('source_id')}
+        queued = PublicationQueue(history_path=history.path).records()
+        checked_at = datetime.datetime.now(datetime.timezone.utc)
+        models = model_index(records.values(), queued, checked_at)
+        recent = recent_mechanisms(records.values(), queued, checked_at)
         fresh = []
         for candidate in ranked:
             caption = candidate.get('text', '')
@@ -855,8 +859,14 @@ def main():
                 topic_skipped.append({'candidate': candidate, 'match': match,
                                       'reason': '近 30 天同车型同机构：%s %s · %s' %
                                                 (match['brand'], match['model'], match['mechanism'])})
-            else:
-                fresh.append(candidate)
+                continue
+            model = caption_duplicate(caption, models)
+            if model:
+                topic_skipped.append({'candidate': candidate, 'match': model,
+                                      'reason': '下载前同车型（%s）：%s %s' %
+                                                (model['origin'], model['brand'], model['model'])})
+                continue
+            fresh.append(candidate)
         ranked = sorted(fresh, key=lambda c: -c.get('series_priority', 0))
     for index, item in enumerate(ranked, 1):
         item["rank"] = index

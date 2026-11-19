@@ -902,8 +902,9 @@ def test_recent_mechanism_skips_before_download_with_auditable_match(tmp_path):
     backend = FakeBackend([(posts, None)])
     result = pipeline.run_pipeline(args, backend)
     assert result['recent_mechanism_skipped'] == 1
-    assert result['downloads_attempted'] == 3
-    assert backend.downloads == backend.frame_calls == ['2', '3', '4']
+    assert result['model_duplicates_skipped'] == 1
+    assert result['downloads_attempted'] == 2
+    assert backend.downloads == backend.frame_calls == ['3', '4']
     state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
     assert state['items']['1']['recent_duplicate']['source_id'] == 'old'
     assert state['items']['1']['recent_duplicate']['mechanism'] == '鹰翼门'
@@ -1119,3 +1120,56 @@ def test_gina_reposts_require_prior_approval_of_the_fabric_hood():
         assert not pipeline.match_recent_mechanism(caption, index)
     different = dict(source, verifiable_fact='织物覆盖的头灯打开')
     assert not pipeline.match_recent_mechanism(repost, pipeline.recent_mechanisms([], [], now, [different]))
+
+
+def test_early_rotation_uses_remaining_series_in_same_job(tmp_path):
+    args = args_for(tmp_path, max_pages=6)
+    backend = FakeBackend([([], None)] * 6 + [([tweet(1), tweet(2), tweet(3)], None)])
+    stopped = pipeline.run_pipeline(args, backend)
+    state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
+    first_series = state['plan']['series_id'].split('+')
+    assert stopped['status'] == 'budget_exhausted'
+    assert stopped['empty_series_pages'] == dict.fromkeys(first_series, 2)
+    assert stopped['downloads_attempted'] == 0
+    next_series = state['fallback_series'][0]
+    args.max_pages = 7
+    resumed = pipeline.run_pipeline(args, backend)
+    assert resumed['job_id'] == stopped['job_id'] and resumed['pages_used'] == 7
+    req = json.loads(Path(resumed['review_request']).read_text())
+    assert {entry['series_id'] for entry in req['items'].values()} == {next_series}
+    assert resumed['empty_series_pages'][next_series] == 0
+    assert req['topic_plan']['content_mix'] == {'rare_models': .6, 'mechanical_contrast': .25, 'visual_experiment': .15}
+
+
+def test_empty_streak_resets_on_new_candidate_and_ignores_search_errors(tmp_path):
+    args = args_for(tmp_path, series='limited_supercars', max_pages=2)
+    backend = FakeBackend([([], None), ([tweet(1)], None)])
+    res = pipeline.run_pipeline(args, backend)
+    assert res['empty_series_pages'] == {'limited_supercars': 0}
+    args.review_file = review_all(args.out, reject=['1'])
+    args.max_pages = 4
+    def fail(*args):
+        raise RuntimeError('search interrupted')
+    backend.search = fail
+    res = pipeline.run_pipeline(args, backend)
+    assert res['status'] == 'blocked' and res['pages_used'] == 2
+    assert res['empty_series_pages'] == {'limited_supercars': 0}
+
+
+def test_explicit_model_match_respects_scope_status_age_and_variant():
+    from caption_models import caption_duplicate, model_index
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old = (now - datetime.timedelta(days=31)).isoformat()
+    record = dict(brand='Jaguar', model='XJ220', status='published', source_id='known', published_at=old)
+    assert not model_index([record], [], now)
+    assert not model_index([], [dict(record, status='withdrawn')], now)
+    for records, pool, origin in (([], [dict(record, status='queued', enqueued_at=old, publish_hold=True)], '候选池'),
+                                  ([dict(record, status='unconfirmed', published_at=now.isoformat())], [], '发布历史')):
+        index = model_index(records, pool, now)
+        for text in ('#Jaguar XJ220 https://t.co/short', '#JaguarXJ220 🥹', '捷豹XJ220的灯罩', 'XJ220', '#Jaguar XJ220 1992'):
+            match = caption_duplicate(text, index)
+            assert match['origin'] == origin and match['source_id'] == 'known'
+        for text in ('Jaguar', 'Jaguar XJ220S', 'Jaguar XJ220 S', 'Jaguar XJ220 vs Porsche 959',
+                     'Jaguar XJ220, Ferrari F40', '@JaguarXJ220 https://x.com/JaguarXJ220',
+                     'Ford Transit powered by Jaguar XJ220 engine'):
+            assert caption_duplicate(text, index) is None

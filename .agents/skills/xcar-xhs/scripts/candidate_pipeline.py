@@ -13,6 +13,7 @@ from itertools import zip_longest
 from pathlib import Path
 
 import finder
+from caption_models import caption_duplicate, model_index
 from candidate_pool import enqueue_finalized
 from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
                               content_digest, file_digest, validate_editorial_review)
@@ -166,7 +167,8 @@ def narrow_mechanism_queries(state):
                 **query, 'reason': '宽泛机构词已补车型，旧游标不适用于新查询',
             })
         if narrowed not in known:
-            active.append({'query': narrowed, 'cursor': None, 'pages': 0,
+            active.append({**({'explicit': True} if query.get('explicit') else {}),
+                           'query': narrowed, 'cursor': None, 'pages': 0,
                            'done': False, 'series_id': series_id})
             known.add(narrowed)
     state['queries'] = active
@@ -180,6 +182,52 @@ def screen_series(entry, state):
         source_id = str(entry['item']['candidate']['id'])
         state.setdefault('series_skips', {}).setdefault(source_id, {})[series] = conflict
         entry.update(status='skipped', series_mismatch=series, reason=conflict)
+
+
+EMPTY_PAGE_LIMIT = 2
+
+
+def next_search(state):
+    streaks = state.get('empty_series_pages', {})
+    available = [q for q in state['queries'] if streaks.get(q.get('series_id'), 0) < EMPTY_PAGE_LIMIT
+                 or (q.get('explicit') and q['pages'] == 0)]
+    return select_query(available, state['query_yield'], state['items'])
+
+
+def extend_refill(state):
+    """自动任务在同栏目依库存顺序换系列，原游标、审核和页预算继续有效。"""
+    remaining = state.get('fallback_series', [])
+    if not remaining:
+        return False
+    series = remaining.pop(0)
+    plan = state['plan']
+    apply_series_override(plan, plan['series_id'].replace('+', ',') + ',' + series)
+    old_queries = {q['query'] for q in state['queries']}
+    state['queries'].extend({'query': q, 'series_id': series, 'pages': 0, 'cursor': None, 'done': False}
+                            for q in plan['queries'] if q not in old_queries and plan['query_series'][q] == series)
+    return True
+
+
+def screen_caption(entry, state, models, mechanisms):
+    if entry['status'] != 'discovered':
+        return
+    caption = entry['item']['candidate'].get('text', '')
+    series = entry.get('series_id') or state['plan']['series_id']
+    color = color_only_match(caption, series)
+    if color:
+        entry.update(status='skipped', color_only=color, reason='汽车机关图鉴：原帖仅展示车身变色')
+        return
+    mechanism = match_recent_mechanism(caption, mechanisms)
+    if mechanism:
+        entry.update(status='skipped', recent_duplicate=mechanism,
+                     reason='下载前命中近 30 天同车型同机构：%s %s · %s' %
+                            (mechanism['brand'], mechanism['model'], mechanism['mechanism']))
+        return
+    match = caption_duplicate(caption, models)
+    if match:
+        entry.update(status='skipped', model_duplicate=match,
+                     reason='下载前同车型（%s）：%s %s · %s' %
+                            (match['origin'], match['brand'], match['model'], match['source_id']))
 
 
 def review_request(state, out):
@@ -383,6 +431,9 @@ def run_pipeline(args, backend=None):
                                                   'series_id': (plan.get('query_series') or {}).get(q)
                                                   or plan['series_id']}
                                                  for q in make_queries(plan)], 'created_at': now()}
+            if not getattr(args, 'series', None) and not args.query:
+                state['fallback_series'] = [sid for sid in plan['ranked_series']
+                                            if sid not in plan['series_id'].split('+')]
             record_event('candidate', 'topic_strategy', state['job_id'],
                          event_id=state['job_id'] + ':topic_strategy',
                          details={'series_id': plan.get('series_id'), 'pillar': plan.get('pillar')},
@@ -394,7 +445,7 @@ def run_pipeline(args, backend=None):
         retire_unscoped_queries(state, args.query)
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
-                state['queries'].append({'query': query, 'cursor': None, 'pages': 0, 'done': False,
+                state['queries'].append({'query': query, 'explicit': True, 'cursor': None, 'pages': 0, 'done': False,
                                          'series_id': state['plan']['series_id'].split('+')[0]})
         if not args.cancel and state['status'] not in ('complete', 'cancelled'):
             narrow_mechanism_queries(state)
@@ -421,6 +472,8 @@ def run_pipeline(args, backend=None):
                       'rejected': sum(e['status'] == 'rejected' for e in state['items'].values()),
                       'retryable_failed': sum(e['status'] in ('download_failed', 'frame_failed') for e in state['items'].values()),
                       'pages_used': state['pages'], 'downloads_attempted': state['downloads'],
+                      'empty_series_pages': state.get('empty_series_pages', {}),
+                      'model_duplicates_skipped': sum('model_duplicate' in e for e in state['items'].values()),
                       'series_mismatch_skipped': len(state.get('series_skips', {})),
                       'color_only_skipped': sum('color_only' in e for e in state['items'].values()),
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
@@ -502,14 +555,16 @@ def run_pipeline(args, backend=None):
                 for job_id, job in registry['jobs'].items():
                     if job_id != state['job_id']:
                         occupied.update(reserved_source_ids(job, checked_at))
+                records = latest_records(history.records())
+                models = model_index(records, queued, checked_at)
+                recent = recent_mechanisms(records, queued, checked_at, approved)
                 candidates = [e for e in state['items'].values() if e['status'] in ('discovered', 'downloaded')]
                 for entry in candidates:
                     screen_series(entry, state)
+                    screen_caption(entry, state, models, recent)
                 candidates = [entry for entry in candidates if entry['status'] != 'skipped']
                 candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
                 if candidates:
-                    recent = recent_mechanisms(history.records(), queued,
-                                               datetime.datetime.now(datetime.timezone.utc), approved)
                     # 每次准备补足目标所需的审核任务，然后交给 Agent。
                     pending = 0
                     for entry in candidates:
@@ -532,20 +587,6 @@ def run_pipeline(args, backend=None):
                             checkpoint()
                             continue
                         if entry['status'] == 'discovered':
-                            caption = item['candidate'].get('text', '')
-                            series_id = entry.get('series_id') or state['plan'].get('series_id')
-                            color = color_only_match(caption, series_id)
-                            if color:
-                                entry.update(status='skipped', color_only=color, reason='汽车机关图鉴：原帖仅展示车身变色')
-                                checkpoint()
-                                continue
-                            match = match_recent_mechanism(caption, recent)
-                            if match:
-                                entry.update(status='skipped', recent_duplicate=match,
-                                             reason='下载前命中近 30 天同车型同机构：%s %s · %s' %
-                                                    (match['brand'], match['model'], match['mechanism']))
-                                checkpoint()
-                                continue
                             if state['downloads'] >= args.max_downloads:
                                 return finish('budget_exhausted', '累计下载尝试预算耗尽；可提高 --max-downloads 后恢复')
                             state['downloads'] += 1
@@ -588,7 +629,14 @@ def run_pipeline(args, backend=None):
                     if pending:
                         return finish('awaiting_review')
                     continue
-                query = select_query(state['queries'], state['query_yield'], state['items'])
+                query = next_search(state)
+                if query is None and state['pages'] < args.max_pages and extend_refill(state):
+                    excluded = {e['source_id'] for e in queued if e['status'] in ('withdrawn', 'invalid', 'needs_review')}
+                    state['query_yield'] = prior_query_yield(registry['jobs'].values(), state, excluded)
+                    checkpoint()
+                    continue
+                if query is None and state.get('fallback_series') and state['pages'] >= args.max_pages:
+                    return finish('budget_exhausted', '页预算耗尽，恢复后可继续切换系列')
                 if query is None:
                     return finish('exhausted', '同系列检索已耗尽；可添加 --query 继续，不能降低核验标准')
                 if state['pages'] >= args.max_pages:
@@ -630,8 +678,12 @@ def run_pipeline(args, backend=None):
                     entry = state['items'][source_id]
                     if not reason:
                         screen_series(entry, state)
+                        screen_caption(entry, state, models, recent)
                         if entry['status'] == 'discovered':
                             sources.append(source_id)
+                series = query.get('series_id') or state['plan']['series_id']
+                streaks = state.setdefault('empty_series_pages', {})
+                streaks[series] = 0 if sources else streaks.get(series, 0) + 1
                 checkpoint()
             state['status'] = 'finalizing'
             state['phase'] = 'finalizing'
