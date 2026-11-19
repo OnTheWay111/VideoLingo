@@ -2,11 +2,13 @@
 import re
 from functools import lru_cache
 
+from race_humor import RACE_TERMS, SERIES_ID as RACE_HUMOR, assess_race
 from topic_planner import PILLARS
 
 
 # 每个系列给审核员同一个可回答的问题。关键词仅为正向线索，缺词不能证明不匹配。
 SERIES = {
+    RACE_HUMOR: ('哪场正赛中发生了什么自然插曲，连续画面和赛事来源如何对上？', RACE_TERMS),
     'rare_jdm': ('哪台日系车的哪个设计值得辨认？', r'kei car|jdm|軽自動車|日系'),
     'limited_supercars': ('具体限量版本或独有设计是什么？', r'limited edition|one[- ]off|one of|only \d+|限量|孤品'),
     'screen_game_cars': ('哪台实车对应哪部作品，是原车、同款还是复刻？', r'picture car|movie car|screen.used|replica|电影|复刻'),
@@ -58,6 +60,8 @@ def assess_series(series, text):
     if series not in SERIES:
         return 0, ''
     caption = re.sub(r'https?://\S+|@\w+', ' ', text or '')
+    if series == RACE_HUMOR:
+        return assess_race(caption)
     road = ROAD.search(caption)
     mixed = MIXED.search(caption)
     if series != 'experimental_vehicles' and GAMEPLAY.search(caption) and not mixed:

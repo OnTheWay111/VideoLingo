@@ -6,6 +6,8 @@
 
 审核是 Agent 的工作，不是新增人工授权环节。不校验可追溯转载许可，不要求 rights_evidence 或 rights_source，不因缺少许可字段淘汰。仍须真实核查画面、事实与评分，不得用固定分数或虚构来源填写证据。脚本检查证据结构和一致性，不判断证据真伪。
 
+正赛趣事的 editorial 需填 race_event（年份和分站）、race_phase（race / sprint_race / timed_rally_stage）、race_source_url（直接佐证此事的赛事、车队或转播报道）及 incident_evidence（时间点、连续动作、自然笑点及与来源相符的细节）。只有真实比赛中自发发生的片段可入池。
+
 ## 审核文件
 
 复制本次 `review_request.json` 为 `review.json`，保留 `job_id`、候选 ID 与 `video_sha256`。每条填写：

@@ -27,6 +27,7 @@ from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
+from race_humor import RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR
 from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
 
@@ -255,6 +256,8 @@ def review_request(state, out):
             requests[source_id]['verification']['editorial'] = {
                 'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
             }
+            if series == RACE_HUMOR:
+                requests[source_id]['verification']['editorial'].update(dict.fromkeys(RACE_FIELDS, ''))
             if series == 'rally_road_cars' and state['plan']['strategy_version'] >= 10:
                 requests[source_id]['verification']['editorial']['road_version_detail'] = ''
     atomic_json(out / 'review_request.json', {'job_id': state['job_id'], 'topic_plan': state['plan'],
@@ -652,14 +655,16 @@ def run_pipeline(args, backend=None):
                 query.update(cursor=cursor, pages=query['pages'] + 1,
                              done=not tweets or not cursor or cursor == previous)
                 sources = query.setdefault('page_sources', {})[str(query['pages'])] = []
+                series = query.get('series_id') or state['plan']['series_id']
+                lexicon = finder.CAR_LEXICON + ('|' + RACE_TERMS if series == RACE_HUMOR else '')
+                car_pattern = re.compile(lexicon)
                 for tweet in tweets:
                     if not tweet.get("id"):
                         continue
-                    candidate = finder.normalize(tweet, re.compile(finder.CAR_LEXICON), [], True)
+                    candidate = finder.normalize(tweet, car_pattern, [], True)
                     if not candidate:
                         continue
                     source_id = str(candidate['id'])
-                    series = query.get('series_id') or state['plan']['series_id']
                     existing = state['items'].get(source_id)
                     if series in state.get('series_skips', {}).get(source_id, {}):
                         continue
@@ -681,7 +686,6 @@ def run_pipeline(args, backend=None):
                         screen_caption(entry, state, models, recent)
                         if entry['status'] == 'discovered':
                             sources.append(source_id)
-                series = query.get('series_id') or state['plan']['series_id']
                 streaks = state.setdefault('empty_series_pages', {})
                 streaks[series] = 0 if sources else streaks.get(series, 0) + 1
                 checkpoint()

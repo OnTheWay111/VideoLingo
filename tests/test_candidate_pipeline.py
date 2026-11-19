@@ -1173,3 +1173,44 @@ def test_explicit_model_match_respects_scope_status_age_and_variant():
                      'Jaguar XJ220, Ferrari F40', '@JaguarXJ220 https://x.com/JaguarXJ220',
                      'Ford Transit powered by Jaguar XJ220 engine'):
             assert caption_duplicate(text, index) is None
+
+
+def test_race_humor_requires_real_competition_and_incident_evidence(tmp_path):
+    series = 'race_humor'
+    args = args_for(tmp_path, series=series, top=1, min_selected=1, max_pages=1)
+    captions = ['F1 wrong pit box parody', 'NASCAR pit stop practice', 'F1 wrong pit box in the race']
+    backend = FakeBackend([([dict(tweet(i), text=text) for i, text in enumerate(captions, 1)], None)])
+    result = pipeline.run_pipeline(args, backend)
+    assert result['series_mismatch_skipped'] == 2 and backend.downloads == ['3']
+    req = json.loads(Path(result['review_request']).read_text())
+    assert req['topic_plan']['pillar'] == 'visual_experiment'
+    assert 'race_source_url' in req['items']['3']['verification']['editorial']
+    args.review_file = review_all(args.out)
+    initial = json.loads(Path(args.review_file).read_text())
+    editorial = initial['items']['3']['verification']['editorial']
+    assert 'race_event' in pipeline.run_pipeline(args, backend)['error']
+    editorial.update(race_event='测试分站正赛', race_phase='qualifying', race_source_url='https://example.com/race/report',
+                     incident_evidence='测试样例：转播第 8 圈，赛车停错维修位后驶回，车号与样例来源一致')
+    Path(args.review_file).write_text(json.dumps(initial))
+    assert '只接受正赛' in pipeline.run_pipeline(args, backend)['error']
+    editorial['race_phase'] = 'race'
+    Path(args.review_file).write_text(json.dumps(initial))
+    assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
+    row = publication_queue.PublicationQueue(history_path=Path(args.publish_history)).records()[0]
+    assert row['item']['verification']['editorial']['incident_evidence'] == editorial['incident_evidence']
+
+
+@pytest.mark.parametrize('text', ['Sora: race broadcast', 'iRacing funny moment', '赛后采访', '车队练习赛', '车手恶搞配音'])
+def test_race_humor_rejects_parody_virtual_and_off_session(text):
+    assert pipeline.assess_series('race_humor', text)[0] < 0
+    assert pipeline.assess_series('race_humor', 'That happened on lap seven')[0] >= 0
+
+
+def test_model_in_complete_sentence_and_distinct_named_edition():
+    from caption_models import caption_duplicate, model_index
+    row = dict(source_id='db', status='queued', item={'brand': 'Aston Martin', 'model': 'DB5 Goldfinger Continuation'})
+    index = model_index([], [row], datetime.datetime.now(datetime.timezone.utc))
+    assert caption_duplicate('Five DB5s! The first five DB5 Goldfinger Continuation cars have rolled off the line.', index)
+    assert not caption_duplicate('A DB5. Inspired by the DB5 Goldfinger Continuation.', index)
+    assert not caption_duplicate('The first five DB5 cars have rolled off the line.', index)
+    assert caption_duplicate('In association with EON, our 25 DB5 Goldfinger Continuation cars recently started production.', index)

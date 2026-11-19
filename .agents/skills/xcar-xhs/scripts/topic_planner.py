@@ -185,6 +185,15 @@ PILLARS = {
                     '("Toyota Roomy" OR "Daihatsu Tanto" OR "Honda N-Box") ("sliding door" OR "seat folding" OR "interior space")',
                 ),
             },
+            {
+                "id": "race_humor",
+                "label": "正赛中的自然趣事",
+                "query_groups": (
+                    '("Button" "China" OR "Hamilton" "Malaysia") ("wrong pit" OR "wrong garage" OR "wrong team") -gameplay -parody',
+                    '(from:F1 OR from:IndyCar OR from:NASCAR) ("wrong pit" OR "wrong box" OR "wrong pit box") -parody -prank -gameplay',
+                    '(from:FIAWEC OR from:OfficialWRC OR from:NASCAR) ("unexpected visitor" OR "pit stop confusion" OR "funny moment") -staged -spoof',
+                ),
+            },
         ),
     },
 }
