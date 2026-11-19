@@ -3,12 +3,14 @@
 
 import argparse
 import json
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD
+from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD, parse_datetime
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
-STRATEGY_VERSION = 9
+STRATEGY_VERSION = 10
 CONTENT_MIX = {"rare_models": 0.60, "mechanical_contrast": 0.25, "visual_experiment": 0.15}
 PILLAR_SCHEDULE = (
     "rare_models", "rare_models", "mechanical_contrast", "rare_models", "visual_experiment",
@@ -204,21 +206,88 @@ def active_records(records):
                   key=lambda r: r.get("published_at") or r.get("recorded_at") or "")
 
 
-def build_topic_plan(records, queue_records=None, reservations=None):
+STALLED_JOBS = {'blocked', 'budget_exhausted', 'exhausted'}
+STARTUP_LEASE = timedelta(minutes=10)
+
+
+def reserved_source_ids(job, now):
+    """保护已取得的素材。一次中断在下载之前的占位带有效期。"""
+    status = job.get('status')
+    if status in ('complete', 'cancelled'):
+        return set()
+    state = job.get('checkpoint') or {}
+    if 'items' not in state:
+        return set() if status in STALLED_JOBS else set(map(str, job.get('source_ids', [])))
+    eligible = {'approved'}
+    if status not in STALLED_JOBS:
+        eligible.update(('downloaded', 'awaiting_review', 'frame_failed'))
+        updated = parse_datetime(job.get('updated_at'))
+        if updated and timedelta(0) <= now - updated < STARTUP_LEASE:
+            eligible.add('downloading')
+    items = state['items']
+    return {str(sid) for sid in job.get('source_ids', items) if items.get(sid, {}).get('status') in eligible}
+
+
+def production_inventory(queue, jobs, now, published_ids=()):
+    """库存按唯一原帖计算。保留项单列；只有刚启动的搜索任务可以暂估尚无原帖的名额。"""
+    inventory, counts = [], Counter(available=0, held=0, in_production=0, reserved=0)
+    seen = set(published_ids) | {str(e['source_id']) for e in queue if e.get('source_id')}
+    for entry in queue:
+        if entry.get('status') not in ('queued', 'planned'):
+            continue
+        if entry.get('publish_hold'):
+            counts['held'] += 1
+            continue
+        inventory.append(entry.get('item', entry))
+        counts['available'] += 1
+
+    for job in jobs:
+        status = job.get('status')
+        if status in ('complete', 'cancelled'):
+            continue
+        state = job.get('checkpoint') or {}
+        plan = job['plan']
+        specs = plan.get('series_specs') or [{'pillar': plan['pillar'], 'id': plan['series_id']}]
+        pillars = {spec['id']: spec['pillar'] for spec in specs}
+        stalled = status in STALLED_JOBS
+        items = state.get('items') or {}
+        if not items and not state and len(specs) == 1:
+            # 旧登记只有实际占用 ID，没有证据支持按整个批次目标预约。
+            items = {sid: {'status': 'awaiting_review'} for sid in job.get('source_ids', [])}
+        for source_id, entry in items.items():
+            if str(source_id) in seen:
+                continue
+            stage = entry['status']
+            if stage != 'approved' and (stalled or stage not in ('downloaded', 'awaiting_review')):
+                continue
+            item = entry.get('item') or {}
+            series = entry.get('series_id') or item.get('topic_series_id') or plan['series_id']
+            pillar = pillars.get(series) or item.get('topic_pillar')
+            if pillar in PILLARS:
+                seen.add(str(source_id))
+                inventory.append({'topic_pillar': pillar, 'topic_series_id': series})
+                counts['in_production'] += 1
+
+        created = parse_datetime(state.get('created_at'))
+        if (status == 'searching' and not items and not job.get('source_ids') and created
+                and timedelta(0) <= now - created < STARTUP_LEASE):
+            for slot in range(job.get('target', 3)):
+                spec = specs[slot % len(specs)]
+                inventory.append({'topic_pillar': spec['pillar'], 'topic_series_id': spec['id']})
+                counts['reserved'] += 1
+    return inventory, dict(counts)
+
+
+def build_topic_plan(records, queue_records=None, reservations=None, now=None):
     active = active_records(records)
     schedule_index = len(active) % len(PILLAR_SCHEDULE)
     pillar_id = PILLAR_SCHEDULE[schedule_index]
     inventory = []
+    inventory_counts = {}
     if queue_records is not None:
-        inventory = [entry.get("item", entry) for entry in queue_records
-                     if entry.get("status") in ("queued", "planned")]
-        for reservation in reservations or []:
-            if reservation.get("status") not in ("complete", "cancelled"):
-                plan = reservation["plan"]
-                specs = plan.get("series_specs") or [{"pillar": plan["pillar"], "id": plan["series_id"]}]
-                for slot in range(reservation.get("target", 3)):
-                    spec = specs[slot % len(specs)]
-                    inventory.append({"topic_pillar": spec["pillar"], "topic_series_id": spec["id"]})
+        inventory, inventory_counts = production_inventory(
+            queue_records, reservations or [], now or datetime.now(timezone.utc),
+            (str(row['source_id']) for row in active if row.get('source_id')))
         counts = {key: sum(item.get("topic_pillar") == key for item in inventory) for key in PILLARS}
         scheduled = pillar_id
         pillar_id = min(PILLARS, key=lambda key: (counts[key] / CONTENT_MIX[key], key != scheduled))
@@ -244,6 +313,7 @@ def build_topic_plan(records, queue_records=None, reservations=None):
         "strategy_version": STRATEGY_VERSION,
         "mode": "auto",
         "inventory_aware": queue_records is not None,
+        "inventory_counts": inventory_counts,
         "pillar": pillar_id,
         "pillar_label": pillar["label"],
         "content_mix": CONTENT_MIX,

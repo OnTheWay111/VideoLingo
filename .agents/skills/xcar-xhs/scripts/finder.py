@@ -35,6 +35,7 @@ from publish_history import PublishedHistory, default_history_path
 from content_policy import MIN_TOTAL_ENGAGEMENT, engagement_rejection_reason, engagement_total
 from topic_planner import build_topic_plan
 from topic_policy import color_only_match, partition_forbidden_topics
+from series_match import assess_series
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from publication_queue import PublicationQueue
 
@@ -838,7 +839,14 @@ def main():
         fresh = []
         for candidate in ranked:
             caption = candidate.get('text', '')
-            color = color_only_match(caption, (topic_plan or {}).get('series_id'))
+            series = (topic_plan or {}).get('series_id')
+            if series:
+                priority, conflict = assess_series(series, caption)
+                if conflict:
+                    topic_skipped.append({'candidate': candidate, 'reason': conflict, 'series_id': series})
+                    continue
+                candidate['series_priority'] = priority
+            color = color_only_match(caption, series)
             if color:
                 topic_skipped.append({'candidate': candidate, 'match': color, 'reason': '汽车机关图鉴：原帖仅展示车身变色'})
                 continue
@@ -849,7 +857,7 @@ def main():
                                                 (match['brand'], match['model'], match['mechanism'])})
             else:
                 fresh.append(candidate)
-        ranked = fresh
+        ranked = sorted(fresh, key=lambda c: -c.get('series_priority', 0))
     for index, item in enumerate(ranked, 1):
         item["rank"] = index
     for item in publish_skipped:

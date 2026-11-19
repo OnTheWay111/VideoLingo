@@ -116,6 +116,8 @@ def review_all(out, reject=()):
         proof.pop('content_sha256')
         if 'editorial' in result['verification']:
             proof['editorial'] = {
+                **({'road_version_detail': '测试公路版保险杠与量产座舱'}
+                   if result['series_id'] == 'rally_road_cars' else {}),
                 'opening_action_at_sec': 0.5,
                 'discussion_basis': '窄车位打开车门的空间取舍',
                 'follow_up_topic': 'Toyota Sera 蝴蝶门的开启空间',
@@ -143,7 +145,7 @@ def test_inventory_and_reservations_change_production_topic():
     queue += [{'status': 'queued', 'item': {'topic_pillar': 'visual_experiment', 'topic_series_id': 'microcars'}}] * 10
     plan = build_topic_plan([], queue)
     assert plan['pillar'] == 'mechanical_contrast'
-    reservation = {'status': 'awaiting_review', 'target': 3, 'plan': plan}
+    reservation = {'status': 'awaiting_review', 'target': 3, 'plan': plan, 'source_ids': ['in-progress']}
     assert build_topic_plan([], queue, [reservation])['series_id'] != plan['series_id']
 
 
@@ -380,8 +382,8 @@ def test_search_learns_from_compatible_prior_batches_and_keeps_dry_queries_as_fa
     ]
     history = pipeline.prior_query_yield(jobs, current)
     assert history == {
-        'car_mechanisms\ndry': {'samples': 2, 'candidates': 0, 'dry_streak': 2},
-        'car_mechanisms\nuseful': {'samples': 2, 'candidates': 2, 'dry_streak': 0},
+        'car_mechanisms\ndry': {'samples': 2, 'qualified': 0, 'dry_streak': 2},
+        'car_mechanisms\nuseful': {'samples': 2, 'qualified': 1, 'dry_streak': 1},
     }
     fresh = [dict(query, pages=0, done=False) for query in (dry, dict(dry, query='untested'), useful)]
     assert pipeline.select_query(fresh, history, {})['query'] == 'useful'
@@ -389,6 +391,102 @@ def test_search_learns_from_compatible_prior_batches_and_keeps_dry_queries_as_fa
     assert pipeline.select_query(fresh, history, {})['query'] == 'untested'
     fresh[1]['done'] = True
     assert pipeline.select_query(fresh, history, {})['query'] == 'dry'
+
+
+
+def test_inventory_uses_real_sources_and_limits_empty_search_reservations():
+    from topic_planner import production_inventory
+    now = datetime.datetime(2026, 11, 19, tzinfo=datetime.timezone.utc)
+    plan = {'series_id': 'rare_jdm', 'pillar': 'rare_models'}
+    queue = [{'source_id': 'held', 'status': 'queued', 'publish_hold': True, 'item': {}},
+             {'source_id': 'ready', 'status': 'planned', 'item': {}}]
+
+    def job(status, items=None, minutes=0):
+        return {'plan': plan, 'target': 3, 'status': status, 'checkpoint': {
+            'created_at': (now - datetime.timedelta(minutes=minutes)).isoformat(),
+            'items': {sid: {'status': stage} for sid, stage in (items or {}).items()}}}
+
+    jobs = [job('budget_exhausted', {'approved': 'approved', 'held': 'approved', 'pending': 'awaiting_review'}),
+            job('blocked'), job('exhausted'), job('cancelled', {'old': 'approved'}),
+            job('awaiting_review', {'ready': 'approved', 'approved': 'approved', 'new': 'awaiting_review'}),
+            job('searching', minutes=9), job('searching', minutes=10)]
+    inventory, counts = production_inventory(queue, jobs, now)
+    assert counts == {'available': 1, 'held': 1, 'reserved': 3, 'in_production': 2}
+    assert len(inventory) == 6
+
+
+def test_rally_prefilter_prioritizes_version_and_preserves_ambiguous_video(tmp_path):
+    args = args_for(tmp_path, series='rally_road_cars', max_pages=1)
+    captions = ['Final stage drama #WRC car', 'Rare car in a garage', 'Lancia 037 Stradale road car engine']
+    rows = [dict(tweet(i), text=caption, favorite_count=1000 // i) for i, caption in enumerate(captions, 1)]
+    backend = FakeBackend([(rows, None)])
+    receipt = pipeline.run_pipeline(args, backend)
+    assert backend.downloads == ['3', '2']
+    assert receipt['series_mismatch_skipped'] == 1
+    request = json.loads(Path(receipt['review_request']).read_text())
+    assert '公路版本' in request['items']['3']['series_question']
+    assert 'road_version_detail' in request['items']['3']['verification']['editorial']
+    assert '1' not in json.loads((tmp_path / 'candidate_jobs.json').read_text())['rejected']
+
+
+def test_series_mismatch_can_be_reviewed_under_another_series(tmp_path):
+    args = args_for(tmp_path, series='rally_road_cars,experimental_vehicles', max_pages=2)
+    row = dict(tweet(1), text='AI-generated video of an experimental concept car')
+    backend = FakeBackend([([row], None), ([row], None)])
+    result = pipeline.run_pipeline(args, backend)
+    assert backend.downloads == ['1'] and result['series_mismatch_skipped'] == 1
+    request = json.loads(Path(result['review_request']).read_text())
+    assert request['items']['1']['series_id'] == 'experimental_vehicles'
+
+
+def test_only_final_qualified_results_earn_search_credit(tmp_path):
+    from query_schedule import prior_query_yield
+    series = 'rally_road_cars'
+    plan = {'series_id': series}
+    ids = ['usable', 'withdrawn', 'rejected', 'failed', 'pending', 'duplicate']
+    statuses = ['approved', 'approved', 'rejected', 'download_failed', 'awaiting_review', 'approved']
+    items = {sid: {'status': status} for sid, status in zip(ids, statuses)}
+    query = {'query': 'cars', 'pages': 2, 'series_id': series,
+             'page_sources': {'1': ids[:4], '2': ['duplicate']}}
+    job = {'status': 'complete', 'updated_at': '2026-11-18T10:00:00Z', 'out_dir': str(tmp_path),
+           'checkpoint': {'job_id': 'past', 'plan': plan, 'queries': [query],
+                          'items': items, 'enqueue': {'source_ids': ['usable', 'withdrawn']}}}
+    state = {'created_at': '2026-11-18T11:00:00Z', 'plan': plan, 'job_id': 'new'}
+    result = prior_query_yield([job], state, ['withdrawn'])
+    assert result[series + '\ncars'] == {'qualified': 1, 'samples': 2, 'dry_streak': 1}
+
+
+def test_stalled_ids_release_while_fresh_downloads_remain_exclusive():
+    from topic_planner import reserved_source_ids
+    now = datetime.datetime.now(datetime.timezone.utc)
+    job = {'status': 'searching', 'updated_at': now.isoformat(), 'checkpoint': {'items': {
+        '1': {'status': 'downloading'}, '2': {'status': 'awaiting_review'}, '3': {'status': 'approved'}}}}
+    assert reserved_source_ids(job, now) == {'1', '2', '3'}
+    assert reserved_source_ids(job, now + datetime.timedelta(minutes=10)) == {'2', '3'}
+    assert reserved_source_ids(dict(job, status='exhausted'), now) == {'3'}
+
+
+def test_rally_approval_needs_version_detail_before_enqueue(tmp_path):
+    args = args_for(tmp_path, series='rally_road_cars', top=1, min_selected=1)
+    backend = FakeBackend([([dict(tweet(1), text='Lancia 037 Stradale road car')], None)])
+    pipeline.run_pipeline(args, backend)
+    args.review_file = review_all(args.out)
+    review_path = Path(args.review_file)
+    review = json.loads(review_path.read_text())
+    del review['items']['1']['verification']['editorial']['road_version_detail']
+    review_path.write_text(json.dumps(review))
+    receipt = pipeline.run_pipeline(args, backend)
+    assert receipt['status'] == 'blocked' and 'road_version_detail' in receipt['error']
+    assert not Path(receipt['queue_file']).exists()
+
+
+def test_mixed_road_and_race_text_needs_visual_judgment():
+    from series_match import SERIES, assess_series, reviewed_series_conflict
+    assert set(SERIES) == {s['id'] for pillar in pipeline.PILLARS.values() for s in pillar['series']}
+    for text in ['Lancia 037 Stradale alongside a Rally1', 'RS200 road version from the WRC era',
+                 'A rare car #WRC', 'Not gameplay footage, filmed today', 'Subaru Impreza 22B on a special stage']:
+        assert not assess_series('rally_road_cars', text)[1]
+    assert reviewed_series_conflict({'topic_series_id': 'rally_road_cars', 'ai_disclosure': 'AI 生成画面'})
 
 
 def test_failed_download_requires_explicit_retry(tmp_path):

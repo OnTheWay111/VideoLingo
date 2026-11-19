@@ -27,6 +27,7 @@ from publish_history import (
     default_history_path,
 )
 from publication_queue import PublicationQueue
+from series_match import reviewed_series_conflict
 from topic_policy import forbidden_topic_match
 
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video"
@@ -53,6 +54,9 @@ def load_download(out_dir, tweet_id):
 
 
 def validate_content(item, publication=False):
+    conflict = reviewed_series_conflict(item)
+    if conflict:
+        raise ValueError(conflict)
     forbidden = forbidden_topic_match(item)
     if forbidden:
         raise ValueError("小红书禁选主题，禁止生成发布计划：%s" % forbidden)

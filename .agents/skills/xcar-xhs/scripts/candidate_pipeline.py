@@ -20,12 +20,13 @@ from content_policy import SCORE_THRESHOLD, content_duplicate, content_identity,
 from finalize import apply_publish_content, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
-from query_schedule import narrow_mechanism_query, prior_query_yield, search_text, select_query
+from query_schedule import YIELD_VERSION, narrow_mechanism_query, prior_query_yield, search_text, select_query
 from publish_history import PublishedHistory, default_history_path, locked_history, ACTIVE_STATUSES
 from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
-from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries
+from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
+from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
 
 
@@ -171,14 +172,25 @@ def narrow_mechanism_queries(state):
     state['queries'] = active
 
 
+def screen_series(entry, state):
+    series = entry.get('series_id') or state['plan']['series_id']
+    rank, conflict = assess_series(series, entry['item']['candidate'].get('text', ''))
+    entry['series_priority'] = rank
+    if conflict:
+        source_id = str(entry['item']['candidate']['id'])
+        state.setdefault('series_skips', {}).setdefault(source_id, {})[series] = conflict
+        entry.update(status='skipped', series_mismatch=series, reason=conflict)
+
+
 def review_request(state, out):
     requests = {}
     for source_id, entry in state['items'].items():
         if entry['status'] != 'awaiting_review':
             continue
         item = entry['item']
+        series = entry.get('series_id') or state['plan']['series_id']
         requests[source_id] = {
-            'series_id': entry.get('series_id') or state['plan']['series_id'],
+            'series_id': series, 'series_question': SERIES.get(series, ('', ''))[0],
             'source': item['candidate'], 'video': item['video'], 'frames': item['frames'],
             'video_sha256': entry['video_sha256'],
             'decision': 'pending', 'reason': '',
@@ -195,6 +207,8 @@ def review_request(state, out):
             requests[source_id]['verification']['editorial'] = {
                 'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
             }
+            if series == 'rally_road_cars' and state['plan']['strategy_version'] >= 10:
+                requests[source_id]['verification']['editorial']['road_version_detail'] = ''
     atomic_json(out / 'review_request.json', {'job_id': state['job_id'], 'topic_plan': state['plan'],
                                              'items': requests})
     return requests
@@ -238,8 +252,11 @@ def apply_reviews(state, path, out, registry):
                         topic_strategy_version=state['plan']['strategy_version'], candidate_job_id=state['job_id'])
         approved['verification']['content_sha256'] = content_digest(approved)
         forbidden = forbidden_topic_match(approved)
+        series_conflict = reviewed_series_conflict(approved)
         reason = ''
-        if forbidden:
+        if series_conflict:
+            reason = series_conflict
+        elif forbidden:
             reason = '禁选内容：' + forbidden
         elif approved.get('score', 0) < SCORE_THRESHOLD:
             reason = '核验评分低于 %d' % SCORE_THRESHOLD
@@ -249,7 +266,8 @@ def apply_reviews(state, path, out, registry):
                 reason = '汽车机关图鉴前 3 秒未见关键动作'
         if reason:
             entry.update(status='rejected', reason=reason, item=approved, publish=content[source_id])
-            registry['rejected'][source_id] = {'reason': reason, 'at': now()}
+            if not series_conflict:
+                registry['rejected'][source_id] = {'reason': reason, 'at': now()}
             record_event('candidate', 'visual_fact_review', state['job_id'], source_id,
                          status='rejected', event_id='%s:%s:review' % (state['job_id'], source_id),
                          details={'reason': reason},
@@ -283,6 +301,7 @@ def reconcile_approved(state, history, queue):
         brand = normalize_brand(item['brand'])
         reason = ('原帖已发布或已入池' if history.check(source_id=source_id) or existing else
                   duplicate['reason'] if duplicate else '同品牌每批最多一条' if brand in brands else '')
+        reason = reason or reviewed_series_conflict(item)
         if reason:
             entry.update(status='rejected', reason=reason)
         else:
@@ -307,6 +326,9 @@ def write_manifest(state, out, history):
     manifest = {'schema_version': 2, 'minimum_selected': state.get('min_selected', 3), 'selection_target': state['target'],
                 'selection_complete': False, 'topic_plan': state['plan'],
                 'publish_history_file': str(history.path), 'downloads': selected, 'rejected': rejected,
+                'series_mismatch_skipped': [{'source_id': sid, 'series_id': series, 'reason': reason}
+                                            for sid, skipped in state.get('series_skips', {}).items()
+                                            for series, reason in skipped.items()],
                 'color_only_skipped': [{'source_id': key, 'match': entry['color_only']}
                                        for key, entry in state['items'].items() if 'color_only' in entry],
                 'recent_mechanism_skipped': [{'source_id': key, 'match': entry['recent_duplicate']}
@@ -399,6 +421,7 @@ def run_pipeline(args, backend=None):
                       'rejected': sum(e['status'] == 'rejected' for e in state['items'].values()),
                       'retryable_failed': sum(e['status'] in ('download_failed', 'frame_failed') for e in state['items'].values()),
                       'pages_used': state['pages'], 'downloads_attempted': state['downloads'],
+                      'series_mismatch_skipped': len(state.get('series_skips', {})),
                       'color_only_skipped': sum('color_only' in e for e in state['items'].values()),
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
@@ -406,8 +429,10 @@ def run_pipeline(args, backend=None):
             atomic_json(out / 'candidate_receipt.json', result)
             return result
 
-        if not args.cancel and state['status'] not in ('complete', 'cancelled') and 'query_yield' not in state:
-            state['query_yield'] = prior_query_yield(registry['jobs'].values(), state)
+        if not args.cancel and state['status'] not in ('complete', 'cancelled') and state.get('query_yield_version') != YIELD_VERSION:
+            excluded = {e['source_id'] for e in queue.records() if e['status'] in ('withdrawn', 'invalid', 'needs_review')}
+            state['query_yield'] = prior_query_yield(registry['jobs'].values(), state, excluded)
+            state['query_yield_version'] = YIELD_VERSION
         checkpoint()
         if args.cancel:
             return finish('cancelled')
@@ -473,11 +498,15 @@ def run_pipeline(args, backend=None):
                 # 下载前重新核对历史、队列和其他任务预约。
                 queued = queue.records()
                 occupied = {e['source_id'] for e in queued}
+                checked_at = datetime.datetime.now(datetime.timezone.utc)
                 for job_id, job in registry['jobs'].items():
-                    if job_id != state['job_id'] and job['status'] not in ('complete', 'cancelled'):
-                        occupied.update(job.get('source_ids', []))
+                    if job_id != state['job_id']:
+                        occupied.update(reserved_source_ids(job, checked_at))
                 candidates = [e for e in state['items'].values() if e['status'] in ('discovered', 'downloaded')]
-                candidates.sort(key=lambda e: -finder.to_int(e['item']['candidate'].get(args.sort)))
+                for entry in candidates:
+                    screen_series(entry, state)
+                candidates = [entry for entry in candidates if entry['status'] != 'skipped']
+                candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
                 if candidates:
                     recent = recent_mechanisms(history.records(), queued,
                                                datetime.datetime.now(datetime.timezone.utc), approved)
@@ -582,7 +611,11 @@ def run_pipeline(args, backend=None):
                     if not candidate:
                         continue
                     source_id = str(candidate['id'])
-                    if source_id in state['items']:
+                    series = query.get('series_id') or state['plan']['series_id']
+                    existing = state['items'].get(source_id)
+                    if series in state.get('series_skips', {}).get(source_id, {}):
+                        continue
+                    if existing and not existing.get('series_mismatch'):
                         continue
                     engagement_reason = finder.engagement_filter_reason(
                         candidate, args.min_likes, args.min_reposts)
@@ -593,10 +626,12 @@ def run_pipeline(args, backend=None):
                               forbidden_topic_match(candidate))
                     state['items'][source_id] = {'status': 'skipped' if reason else 'discovered',
                                                   'reason': reason,
-                                                  'series_id': query.get('series_id') or state['plan'].get('series_id'),
-                                                  'item': {'candidate': candidate}}
+                                                  'series_id': series, 'item': {'candidate': candidate}}
+                    entry = state['items'][source_id]
                     if not reason:
-                        sources.append(source_id)
+                        screen_series(entry, state)
+                        if entry['status'] == 'discovered':
+                            sources.append(source_id)
                 checkpoint()
             state['status'] = 'finalizing'
             state['phase'] = 'finalizing'

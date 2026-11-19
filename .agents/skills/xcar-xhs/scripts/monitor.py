@@ -103,6 +103,7 @@ def pool_item_view(entry):
     return {
         "source_id": str(entry.get("source_id") or candidate.get("id") or ""),
         "status": entry.get("status") or "queued",
+        "publish_hold": bool(entry.get("publish_hold")),
         "title": entry.get("title") or item.get("title") or "未命名视频",
         "body": item.get("body") or item.get("recommendation") or "",
         "topics": [str(topic) for topic in topics],
@@ -214,6 +215,8 @@ class MonitorData:
             "summary": {
                 "candidate_count": len(candidates), "published_count": len(published),
                 "pending_pool_count": len(pending_pool),
+                "available_pool_count": sum(not row.get("publish_hold") for row in pending_pool),
+                "held_pool_count": sum(bool(row.get("publish_hold")) for row in pending_pool),
                 "published_links_available": links_available,
                 "published_links_pending": len(published) - links_available,
             },

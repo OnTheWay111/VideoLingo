@@ -25,7 +25,7 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
     usage = tmp_path / 'token_usage.jsonl'
     jobs = tmp_path / 'candidate_jobs.json'
     write_json(queue, {'version': 1, 'entries': [{
-        'source_id': 'candidate-1', 'status': 'queued',
+        'source_id': 'candidate-1', 'status': 'queued', 'publish_hold': True,
         'enqueued_at': '2026-11-15T16:15:00+00:00', 'title': '真实候选', 'score': 88,
         'item': {'candidate_job_id': 'job-1', 'candidate': {
             'id': 'candidate-1', 'url': 'https://x.com/car/status/candidate-1'}},
@@ -53,7 +53,7 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
 
     assert snapshot['summary'] == {
         'candidate_count': 1, 'published_count': 1,
-        'pending_pool_count': 1,
+        'pending_pool_count': 1, 'available_pool_count': 0, 'held_pool_count': 1,
         'published_links_available': 0, 'published_links_pending': 1,
     }
     assert snapshot['token']['candidate']['total_tokens'] == 120
@@ -63,6 +63,7 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
     assert snapshot['active_tasks'][0]['current_stage'] == 'visual_fact_review'
     assert snapshot['active_tasks'][0]['progress']['awaiting_review'] == 1
     assert snapshot['pending_pool_items'][0] == {
+        'publish_hold': True,
         'source_id': 'candidate-1', 'status': 'queued', 'title': '真实候选',
         'body': '', 'topics': [], 'likes': None, 'replies': None, 'reposts': None,
         'source_url': 'https://x.com/car/status/candidate-1', 'out_dir': '',

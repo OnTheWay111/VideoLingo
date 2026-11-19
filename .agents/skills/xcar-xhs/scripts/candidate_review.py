@@ -34,6 +34,11 @@ def content_digest(item):
     return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+def needs_road_version_detail(item):
+    version = str(item.get('topic_strategy_version') or '')
+    return item.get('topic_series_id') == 'rally_road_cars' and version.isdecimal() and int(version) >= 10
+
+
 def validate_editorial_review(item):
     editorial = (item.get('verification') or {}).get('editorial')
     if not isinstance(editorial, dict) or 'opening_action_at_sec' not in editorial:
@@ -48,6 +53,10 @@ def validate_editorial_review(item):
     for field in ('discussion_basis', 'follow_up_topic'):
         if not isinstance(editorial.get(field), str) or not editorial[field].strip():
             raise ValueError('选材审核缺少 editorial.' + field)
+    if needs_road_version_detail(item):
+        detail = editorial.get('road_version_detail')
+        if not isinstance(detail, str) or not detail.strip():
+            raise ValueError('拉力公路版须填写公路版本的可见辨认细节 road_version_detail')
     return editorial
 
 
@@ -84,7 +93,7 @@ def validate_review(item, check_digest=True, require_rights=False):
     if not isinstance(reasons, dict) or set(reasons) != set(SCORE_RUBRIC) or not all(
             isinstance(value, str) and value.strip() for value in reasons.values()):
         raise ValueError('五项评分必须逐项填写理由')
-    if 'editorial' in review:
+    if 'editorial' in review or needs_road_version_detail(item):
         editorial = validate_editorial_review(item)
         if item.get('topic_series_id') == ACTION_SERIES and editorial['opening_action_at_sec'] is None:
             raise ValueError('汽车机关图鉴须在前 3 秒看见关键动作')
