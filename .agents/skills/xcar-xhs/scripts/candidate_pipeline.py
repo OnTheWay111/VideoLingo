@@ -3,6 +3,7 @@
 import argparse
 import copy
 import datetime
+import hashlib
 import json
 import re
 import sys
@@ -27,7 +28,7 @@ from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
-from race_humor import (LEAGUE_QUERIES, interview_queries, wrc_archive_reason, wrc_clip_rank, predownload_reason, RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
+from race_humor import (brief_candidate_matches, brief_queries, rotate_brief_family, LEAGUE_QUERIES, interview_queries, wrc_archive_reason, wrc_clip_rank, predownload_reason, RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
                         covered_queries, incident_profile, race_index)
 from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
@@ -60,6 +61,19 @@ class Backend:
 
     def search(self, query, cursor, page, out):
         self.prepare()
+        linked = re.match(r'^wrc-post:(\d+)\b', query)
+        if linked:
+            proc = finder.run([self.python, self.xfetch, 'tweet', linked.group(1), '--format', 'jsonl'],
+                              env=self.env, timeout=min(120, self.args.operation_timeout))
+            if proc.returncode:
+                raise RuntimeError('无法读取简报引用的 X 原帖：' +
+                                   finder.redact_session_values((proc.stderr or '')[:200], self.env))
+            raw = out / 'raw'
+            raw.mkdir(parents=True, exist_ok=True)
+            key = hashlib.sha256(query.encode()).hexdigest()[:16]
+            (raw / (key + '_page1.jsonl')).write_text(proc.stdout or '')
+            tweets = [json.loads(line) for line in (proc.stdout or '').split('\n') if line.strip()]
+            return [tw for tw in tweets if isinstance(tw, dict) and str(tw.get('id')) == linked.group(1)], None
         return finder.search_page(self.python, self.xfetch, query, self.args, self.env, out / 'raw', cursor, page)
 
     def download(self, candidate, out):
@@ -194,7 +208,12 @@ def next_search(state):
     available = [q for q in state['queries'] if streaks.get(q.get('series_id'), 0) < EMPTY_PAGE_LIMIT
                  or (q.get('explicit') and q['pages'] == 0)]
     covered = state.get('covered_race_queries', {})
-    return select_query([q for q in available if q['query'] not in covered], state['query_yield'], state['items'])
+    available = [q for q in available if q['query'] not in covered]
+    if state.get('wrc_brief'):
+        linked = next((q for q in available if q.get('family') == 'linked' and not q['done']), None)
+        if linked:
+            return linked
+    return select_query(available, state['query_yield'], state['items'])
 
 
 def extend_refill(state):
@@ -216,9 +235,15 @@ def screen_caption(entry, state, models, mechanisms, race_events=None):
         return
     caption = entry['item']['candidate'].get('text', '')
     series = entry.get('series_id') or state['plan']['series_id']
+    if state.get('wrc_brief') and not brief_candidate_matches(
+            entry['item']['candidate'], entry.get('race_query', ''), state['wrc_brief']):
+        entry.update(status='skipped', reason='原帖缺少该简报的车组或分站依据')
+        return
     if series == RACE_HUMOR:
+        linked = bool(state.get('wrc_brief') and entry.get('race_query') ==
+                      'wrc-post:' + str(entry['item']['candidate']['id']))
         reason = predownload_reason(caption, state.get('race_leagues', ()),
-                                    entry['item']['candidate'].get('author') or '')
+                                    entry['item']['candidate'].get('author') or '', verified_link=linked)
         if state.get('race_leagues') == ['wrc']:
             reason = reason or wrc_archive_reason(caption)
             if entry.get('race_query') in state.get('retired_interview_queries', ()):
@@ -498,6 +523,26 @@ def run_pipeline(args, backend=None):
                 state['queries'] = [dict(query=q + ' filter:videos', explicit=True, cursor=None,
                                          pages=0, done=False, series_id=RACE_HUMOR)
                                     for q in LEAGUE_QUERIES[league]]
+        brief_file = getattr(args, 'wrc_brief', None)
+        if brief_file:
+            brief = json.loads(Path(brief_file).read_text())
+            if state.get('race_leagues') != ['wrc'] or not isinstance(brief, dict):
+                raise ValueError('--wrc-brief 只用于 WRC 单分站简报')
+            if 'wrc_brief' in state and state['wrc_brief'] != brief:
+                raise ValueError('恢复任务不能替换已核实的简报')
+            if 'wrc_brief' not in state:
+                if state['pages']:
+                    raise ValueError('使用新目录开始简报任务')
+                state['queries'] = brief_queries(brief)
+                state['wrc_brief'] = brief
+        for link in getattr(args, 'wrc_post', []):
+            match = re.fullmatch(r'https://(?:www\.)?(?:x|twitter)\.com/\w+/status/(\d+)(?:/video/\d+)?', link)
+            if not state.get('wrc_brief') or not match:
+                raise ValueError('--wrc-post 需要简报及其对应的 X 原帖地址')
+            lookup = 'wrc-post:' + match.group(1)
+            if not any(q['query'] == lookup for q in state['queries']):
+                state['queries'].insert(0, dict(query=lookup, family='linked', explicit=True, pages=0,
+                                                cursor=None, done=False, series_id=RACE_HUMOR))
         retire_unscoped_queries(state, args.query)
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
@@ -647,6 +692,15 @@ def run_pipeline(args, backend=None):
                 candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
                 if state.get('race_leagues') == ['wrc']:
                     candidates.sort(key=lambda e: wrc_clip_rank(e['item']['candidate']))
+                if state.get('wrc_brief'):
+                    # Resolve supplied evidence before downloading unrelated results from a race-day page.
+                    if any(q.get('family') == 'linked' and not q['done'] for q in state['queries']):
+                        candidates = []
+                    phrases = [p.casefold() for p in state['wrc_brief']['phrases']]
+                    phrases.extend(p.casefold() for q in args.query for p in re.findall(r'"([^"]+)"', q))
+                    candidates.sort(key=lambda e: not any(p in e['item']['candidate']['text'].casefold()
+                                                          for p in phrases))
+                    candidates.sort(key=lambda e: not e.get('race_query', '').startswith('wrc-post:'))
                 if candidates:
                     # 每次准备补足目标所需的审核任务，然后交给 Agent。
                     pending = 0
@@ -743,7 +797,8 @@ def run_pipeline(args, backend=None):
                 for tweet in tweets:
                     if not tweet.get("id"):
                         continue
-                    candidate = finder.normalize(tweet, car_pattern, [], True)
+                    verified_link = query.get('family') == 'linked' and bool(state.get('wrc_brief'))
+                    candidate = finder.normalize(tweet, car_pattern, [], not verified_link)
                     if not candidate:
                         continue
                     source_id = str(candidate['id'])
@@ -773,6 +828,7 @@ def run_pipeline(args, backend=None):
                         screen_caption(entry, state, models, recent, events)
                         if entry['status'] == 'discovered':
                             sources.append(source_id)
+                rotate_brief_family(state, query, sources)
                 streaks = state.setdefault('empty_series_pages', {})
                 streaks[series] = 0 if sources else streaks.get(series, 0) + 1
                 checkpoint()
@@ -801,6 +857,8 @@ def run_pipeline(args, backend=None):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--wrc-post', action='append', default=[], help='与简报事件交叉核对的原帖链接')
+    parser.add_argument('--wrc-brief', help='已查证的单分站赛段简报 JSON')
     parser.add_argument('--race-league', choices=sorted(LEAGUE_QUERIES))
     parser.add_argument('--out', required=True, help='新任务目录；同目录再次运行恢复')
     parser.add_argument('--top', type=int, default=3)

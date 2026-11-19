@@ -1,4 +1,5 @@
 """正赛自然趣事：原帖初筛，审核时核对赛事与连续画面。"""
+import datetime
 import re
 import unicodedata
 from urllib.parse import urlsplit
@@ -33,7 +34,75 @@ LEAGUE_NAMES = {'nascar': r'nascar', 'indycar': r'indycar|indy500', 'wrc': r'wrc
                 'f1': r'f1|formula (?:one|1)', 'wec': r'wec|fiawec', 'nhra': r'nhra(?:finals)?'}
 
 
-def predownload_reason(text, leagues=(), author=''):
+def brief_queries(brief):
+    """Build one race-day broadcast search and independent caption wording families."""
+    fields = ('rally', 'stage', 'crew', 'incident', 'official_url', 'date', 'speaker')
+    if any(not isinstance(brief.get(k), str) or not brief[k].strip() for k in fields):
+        raise ValueError('WRC 简报缺少分站、车组、赛段、插曲、来源、日期或检索用车手名')
+    if not re.fullmatch(r'SS(?:S)?\s*\d+[A-Z]?', brief['stage'], re.I):
+        raise ValueError('WRC 简报须记录官方赛段号')
+    url = urlsplit(brief['official_url'])
+    if url.scheme != 'https' or not url.hostname:
+        raise ValueError('WRC 简报须记录官方来源网址')
+    day = datetime.date.fromisoformat(brief['date'])
+    phrases = brief.get('phrases')
+    if not isinstance(phrases, list) or not phrases or any(
+            not isinstance(p, str) or not p.strip() or '"' in p for p in phrases):
+        raise ValueError('WRC 简报需要原帖动作短语')
+    result = []
+    if day.year >= 2007:
+        result.append((f'from:OfficialWRC since:{day} until:{day + datetime.timedelta(days=1)}', 'race_day'))
+    for phrase in phrases:
+        result.extend([(f'"{brief["speaker"]}" "{phrase}"', phrase),
+                       (f'from:OfficialWRC "{phrase}"', phrase)])
+    return [dict(query=q + ' filter:videos', family=family, explicit=True, pages=0,
+                 cursor=None, done=False, series_id=SERIES_ID) for q, family in result]
+
+
+def brief_candidate_matches(candidate, query, brief):
+    if query == 'wrc-post:' + str(candidate.get('id')):
+        return True
+    caption = folded(candidate.get('text', ''))
+    if query.startswith('from:OfficialWRC since:'):
+        # Search sometimes returns adjacent days; keep same-day vague broadcast captions.
+        date = str(candidate.get('date') or '')[:10]
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+            return date == brief['date']
+        return True
+    years = set(re.findall(r'\b(?:19|20)\d{2}\b', caption))
+    if years and brief['date'][:4] not in years:
+        return False
+    names = [name.strip() for name in brief['crew'].split('/') if name.strip()]
+    tokens = [w for w in folded(brief['rally']).split() if w not in ('rally', 'rallye') and not w.isdigit()]
+    speaker = folded(brief['speaker'])
+    action = any(folded(phrase) in caption for phrase in brief['phrases'])
+    return ((speaker in caption and action) or
+            any(folded(word) in caption for word in names + tokens if len(word) > 2))
+
+
+def rotate_brief_family(state, query, sources):
+    family = query.get('family')
+    if not family:
+        return
+    streak = state.setdefault('brief_empty_streak', {})
+    streak[family] = 0 if sources else streak.get(family, 0) + 1
+    if family in ('race_day', 'linked'):
+        return
+    # Two dry spellings move on from the phrase. If its replacement is also dry,
+    # keep the checkpoint for a new briefing or a corroborated link.
+    if sources:
+        state['dry_brief_families'] = []
+    if streak[family] >= 2:
+        dry = state.setdefault('dry_brief_families', [])
+        if family not in dry:
+            dry.append(family)
+        for other in state['queries']:
+            label = other.get('family')
+            if label == family or (len(dry) >= 2 and label and label not in ('race_day', 'linked')):
+                other['done'] = True
+
+
+def predownload_reason(text, leagues=(), author='', verified_link=False):
     caption = re.sub(r'https?://\S+|@\w+', ' ', text, flags=re.I)
     mentioned = {key for key, terms in LEAGUE_NAMES.items()
                  if re.search(r'\b(?:' + terms + r')\b', caption, re.I)}
@@ -49,7 +118,7 @@ def predownload_reason(text, leagues=(), author=''):
     if re.search(r'\b(?:horrific crash|violent impact|hospitali[sz]ed after|'
                  r'(?:heavy|massive|high.speed) (?:wreck|crash)|car.s impact with the (?:sand.filled )?safety barrels)\b|严重撞车', caption, re.I):
         return '原帖描述严重撞击'
-    if leagues and not mentioned.intersection(leagues):
+    if leagues and not verified_link and not mentioned.intersection(leagues):
         race_context = re.search(r'\b(?:race|rally|racing|lap|restart|pit|chicane|stage|driver|'
                                  r'chastain|ogier|meeke|fourmaux|indy|dixon|pagenaud|zanardi|herta|will power)\b', caption, re.I)
         if not race_context and not any(re.search(LEAGUE_NAMES[key], author, re.I) for key in leagues):

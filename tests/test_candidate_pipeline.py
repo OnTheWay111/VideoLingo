@@ -1297,3 +1297,33 @@ def test_wrc_archive_clip_priority_and_interview_rotation():
     assert interview_queries({'1': entry}) == {entry['race_query']}
     entry['race_query'] = 'from:OfficialWRC bonnet filter:videos'
     assert not interview_queries({'1': entry})
+
+
+def test_wrc_brief_uses_dated_broadcast_and_rotates_empty_wording():
+    from race_humor import brief_queries, brief_candidate_matches, rotate_brief_family
+    brief = dict(rally='Rally Portugal', crew='Elfyn Evans / Scott Martin', stage='SS7',
+                 date='2024-05-10', speaker='Scott Martin', phrases=['phone', 'pace notes'],
+                 incident='reading from phone', official_url='https://rallydeportugal.pt/')
+    queries = brief_queries(brief)
+    assert queries[0]['query'] == 'from:OfficialWRC since:2024-05-10 until:2024-05-11 filter:videos'
+    assert brief_candidate_matches({'date': '2024-05-10', 'text': 'Where there is a will'}, queries[0]['query'], brief)
+    assert not brief_candidate_matches({'date': '2024-05-11'}, queries[0]['query'], brief)
+    assert brief_candidate_matches({'id': '42'}, 'wrc-post:42', brief)
+    assert not brief_candidate_matches({'text': 'Scott Martin at Rally Finland 2020'}, queries[1]['query'], brief)
+    assert brief_queries(dict(brief, date='2002-06-15'))[0]['family'] == 'phone'
+    state = {'queries': queries}
+    for query in queries[1:3]:
+        rotate_brief_family(state, query, [])
+    assert all(q['done'] for q in queries[1:3])
+    assert not queries[3]['done']
+
+
+def test_wrc_link_is_prioritized_and_preserves_negative_caption_checks():
+    from race_humor import predownload_reason
+    link = dict(query='wrc-post:123', family='linked', series_id='race_humor', explicit=True,
+                pages=0, done=False)
+    state = dict(wrc_brief={'stage': 'SS7'}, queries=[dict(link, query='other', family='dated'), link],
+                 query_yield={}, items={})
+    assert pipeline.next_search(state) is link
+    assert not predownload_reason('The dust was so deep!', ['wrc'], verified_link=True)
+    assert predownload_reason('Not today! Test day', ['wrc'], verified_link=True)

@@ -26,6 +26,8 @@ license: MIT
 
 WRC 以“车组＋分站或计时赛段＋可见动作”检索。优先核验已知不超过60秒的单段画面，时长未知仍可递补。逐条审核，事件定向词搜出的长集锦因停车采访淘汰后切换检索词。按原帖赛事年份与明确参赛车型做下载前排除；发帖日期、单独车手名和 WRC 标签不能证明赛事年份或车型。
 
+WRC 专项先读 FIA、WRC 或分站主办方的赛段快报，核对车组、计时赛段编号、日期和具体插曲，再创建简报 JSON。使用 `--series race_humor --race-league wrc --wrc-brief brief.json`；不同分站各开一个任务。简报字段为 `rally, stage, crew, incident, official_url, date, speaker, phrases`，日期用 YYYY-MM-DD，speaker 用一位车组成员的常用名，phrases 用原帖可能采用的简短动作说法。若分站简报或报道嵌有可交叉核对的 X 原帖，优先用 `--wrc-post https://x.com/账号/status/编号` 读取原帖元数据，仍需通过相同互动及审核门槛。汇总时单列原帖读取次数；旧版任务回执的 pages_used 包含这些读取，比较检索页时须扣除。没有原帖链接时先查比赛日官方视频，再查车组名或官方账号与动作的组合；早于 X 的赛事直接查历史回放。连续两页没有新候选即停用该措辞，改查下一种；两组措辞连续耗尽后切到其他已核实的事件，发现原帖链接可恢复原简报任务。入池必须核对画面、车组和简报中的事件；同日其他车组的素材不能顶替目标。
+
 ## 前置条件
 
 - **web-content-fetcher skill**：本仓库内 `.agents/skills/web-content-fetcher/`，提供共享会话与浏览器提取脚本。
