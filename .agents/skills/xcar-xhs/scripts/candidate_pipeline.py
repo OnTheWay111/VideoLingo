@@ -564,10 +564,9 @@ def run_pipeline(args, backend=None):
                     return finish('exhausted', '同系列检索已耗尽；可添加 --query 继续，不能降低核验标准')
                 if state['pages'] >= args.max_pages:
                     return finish('budget_exhausted', '累计搜索页预算耗尽；可提高 --max-pages 后恢复')
-                state['pages'] += 1
-                checkpoint()
                 tweets, cursor = backend.search(search_text(query['query'], vars(args)),
                                                 query['cursor'], query['pages'] + 1, out)
+                state['pages'] += 1
                 record_event('candidate', 'search_filter', state['job_id'],
                              event_id='%s:search:%d' % (state['job_id'], state['pages']),
                              details={'result_count': len(tweets), 'query_page': query['pages'] + 1},

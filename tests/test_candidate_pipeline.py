@@ -705,16 +705,51 @@ def test_downloading_reservation_survives_hard_interruption(tmp_path):
 
 def test_search_timeout_preserves_cursor_and_returns_structured_block(tmp_path):
     import subprocess
-    args = args_for(tmp_path)
+    args = args_for(tmp_path, max_pages=1)
     backend = FakeBackend()
-    backend.search = lambda *args: (_ for _ in ()).throw(subprocess.TimeoutExpired('xfetch', 1))
+    failed_searches = []
+
+    def timeout(query, cursor, page, out):
+        failed_searches.append((query, cursor, page))
+        raise subprocess.TimeoutExpired('xfetch', 1)
+
+    backend.search = timeout
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'blocked'
     assert result['published'] == 0
     state = json.loads((Path(args.out) / 'candidate_state.json').read_text())
-    assert state['pages'] == 1
+    assert result['pages_used'] == state['pages'] == 0
     assert state['queries'][0]['cursor'] is None
     assert state['queries'][0]['done'] is False
+    recovered = FakeBackend()
+    result = pipeline.run_pipeline(args, recovered)
+    assert result['status'] == 'awaiting_review'
+    assert result['pages_used'] == 1
+    assert recovered.searches == failed_searches
+
+
+def test_blocked_second_page_retries_same_cursor_with_original_budget(tmp_path):
+    args = args_for(tmp_path, max_pages=2)
+    backend = FakeBackend([([tweet(1)], 'cursor1')])
+    assert pipeline.run_pipeline(args, backend)['status'] == 'awaiting_review'
+    args.review_file = review_all(args.out)
+    first_query = backend.searches[0][0]
+
+    def fail_search(query, cursor, page, out):
+        assert (query, cursor, page) == (first_query, 'cursor1', 2)
+        raise RuntimeError('X 搜索失败：SearchTimeline: Internal server error')
+
+    backend.search = fail_search
+    blocked = pipeline.run_pipeline(args, backend)
+    assert blocked['status'] == 'blocked'
+    assert 'Internal server error' in blocked['error']
+    assert blocked['pages_used'] == 1
+    args.review_file = None
+    recovered = FakeBackend([([tweet(2), tweet(3)], None)])
+    result = pipeline.run_pipeline(args, recovered)
+    assert result['status'] == 'awaiting_review'
+    assert result['pages_used'] == 2
+    assert recovered.searches == [(first_query, 'cursor1', 2)]
 
 
 def test_missing_media_can_be_explicitly_redownloaded_and_reviewed(tmp_path):
