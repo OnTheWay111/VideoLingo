@@ -1283,3 +1283,17 @@ def test_race_event_keeps_references_out_of_duplicate_counts():
 def test_scoped_race_caption_before_download(league, caption, author, skip):
     from race_humor import predownload_reason
     assert bool(predownload_reason(caption, [league], author)) == skip
+
+
+def test_wrc_archive_clip_priority_and_interview_rotation():
+    from race_humor import wrc_archive_reason, wrc_clip_rank, interview_queries
+    assert wrc_archive_reason('1967 Rally Finland')
+    assert not wrc_archive_reason('1967 Rally Finland and 2002 Rally Catalunya')
+    assert not wrc_archive_reason('Winning in Finland, but with your bonnet up?')
+    assert wrc_clip_rank({'media': [{'duration_millis': 10800}]}) < wrc_clip_rank({})
+    candidate = {'text': 'Kris Meeke leads the Rally México Power Stage'}
+    entry = dict(status='rejected', reason='长集锦含停车采访', item={'candidate': candidate},
+                 race_query='Meeke México min_faves:85 filter:videos')
+    assert interview_queries({'1': entry}) == {entry['race_query']}
+    entry['race_query'] = 'from:OfficialWRC bonnet filter:videos'
+    assert not interview_queries({'1': entry})

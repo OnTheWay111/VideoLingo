@@ -23,7 +23,10 @@ LEAGUE_QUERIES = {
                '(NASCAR OR Busch) Charlotte Roval (sign OR banner)'),
     'indycar': ('Zanardi Herta Corkscrew Laguna',
                 '(IndyCar OR Indy500) Indianapolis (balloon OR balloons)'),
-    'wrc': ('Meeke México (parking OR estacionamiento OR carpark)',
+    'wrc': ('Solberg Monte Carlo field SS12',
+            'Phil Mills steering wheel Acropolis',
+            'Ogier gate Mexico SS18',
+            'Markko Märtin bonnet Elati Zeli',
             '(WRC OR Fourmaux) Sweden (helmet OR strap OR casque)'),
 }
 LEAGUE_NAMES = {'nascar': r'nascar', 'indycar': r'indycar|indy500', 'wrc': r'wrc|world rally championship',
@@ -36,9 +39,9 @@ def predownload_reason(text, leagues=(), author=''):
                  if re.search(r'\b(?:' + terms + r')\b', caption, re.I)}
     if leagues and mentioned and mentioned.isdisjoint(leagues):
         return '原帖明确指向指定范围外的赛事'
-    if leagues and re.search(r'behind.the.scenes', caption, re.I):
+    if leagues and re.search(r'behind.the.scenes|chance to win this|\b(?:rally1|rally2) development\b', caption, re.I):
         return '原帖为幕后花絮或其他体育赛事'
-    if re.search(r'\b(?:fast friday|shakedown|warm.up session)\b', caption, re.I):
+    if re.search(r'\b(?:fast friday|shakedown|test days?|warm.up session)\b', caption, re.I):
         return '原帖明确为练习或试车'
     if re.search(r'\b(?:official trailer|season promo|coming back.{0,80}see you in|'
                  r'(?:stage.{0,80}(?:starts at|live at)|live at) \d{1,2}:\d{2})', caption, re.I | re.S):
@@ -52,6 +55,42 @@ def predownload_reason(text, leagues=(), author=''):
         if not race_context and not any(re.search(LEAGUE_NAMES[key], author, re.I) for key in leagues):
             return '原帖和来源均缺少目标赛车赛事线索'
     return assess_race(caption)[1]
+
+
+def wrc_archive_reason(text):
+    # Require an event/year relationship. The date of a retrospective post is irrelevant.
+    if re.search(r'\b(?:19[0-6]\d|197[0-2])\s+(?:(?:safari|finland|monte carlo|rac)\s+)?rall(?:y|ye)\b|'
+                 r'\brally(?:e)? (?:finland|monte carlo|sweden|kenya)[ ,(-]+(?:19[0-6]\d|197[0-2])\b',
+                 text, re.I) and not re.search(r'\b(?:197[3-9]|19[89]\d|20\d\d)\b', text):
+        return '原帖明确为1973年世界锦标赛创立前的赛事'
+    return ''
+
+
+def interview_queries(items):
+    """Retire the originating event-specific search, never a broad account/prop search."""
+    retired = set()
+    for entry in items.values():
+        if entry.get('status') != 'rejected' or not re.search(r'停车.*采访|停车.*口播|赛后.*采访', entry.get('reason', '')):
+            continue
+        duration = (entry['item'].get('video') or {}).get('duration') or 0
+        if duration <= 60 and '长集锦' not in entry['reason']:
+            continue
+        query = entry.get('race_query', '')
+        if re.search(r'\bOR\b', query, re.I):
+            continue
+        words = re.sub(r'\w+:\S+|\bOR\b', '', query, flags=re.I)
+        tokens = re.findall(r'[a-zÀ-ž0-9]+', folded(words))
+        caption = folded(entry['item']['candidate'].get('text', ''))
+        venue = re.search(r'\b(?:ss\d+|acropolis|mexico|catalunya|safari|finland|sweden|portugal|monte carlo|sardinia|croatia|japan|chile|estonia|poland|greece|wales|kenya)\b', folded(words))
+        if venue and len(tokens) >= 2 and all(has_alias(caption, word) for word in tokens):
+            retired.add(query)
+    return retired
+
+
+def wrc_clip_rank(candidate):
+    durations = [m.get('duration_millis') for m in candidate.get('media', []) if isinstance(m, dict)]
+    known = [v for v in durations if isinstance(v, (int, float)) and v > 0]
+    return 0 if known and max(known) <= 60000 else 2 if known and max(known) > 90000 else 1
 
 
 def assess_race(text):

@@ -229,6 +229,8 @@ def parse_tweet(result):
         "media": [
             {
                 "type": m.get("type"),
+                **({"duration_millis": m["video_info"]["duration_millis"]}
+                   if (m.get("video_info") or {}).get("duration_millis") else {}),
                 "url": m.get("media_url_https") or m.get("media_url"),
             }
             for m in media_src

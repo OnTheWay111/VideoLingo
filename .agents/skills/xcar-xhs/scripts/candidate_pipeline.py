@@ -27,7 +27,7 @@ from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
-from race_humor import (LEAGUE_QUERIES, predownload_reason, RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
+from race_humor import (LEAGUE_QUERIES, interview_queries, wrc_archive_reason, wrc_clip_rank, predownload_reason, RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
                         covered_queries, incident_profile, race_index)
 from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
@@ -219,6 +219,18 @@ def screen_caption(entry, state, models, mechanisms, race_events=None):
     if series == RACE_HUMOR:
         reason = predownload_reason(caption, state.get('race_leagues', ()),
                                     entry['item']['candidate'].get('author') or '')
+        if state.get('race_leagues') == ['wrc']:
+            reason = reason or wrc_archive_reason(caption)
+            if entry.get('race_query') in state.get('retired_interview_queries', ()):
+                reason = reason or '该事件检索已因停车采访换词'
+            # A crew listing may contain "and" while explicitly naming the one competition car.
+            subject = re.search(r'\b(?:in their (?:works )?|at the wheel of (?:the )?)([^,.!#]+?)'
+                                r'(?= during| on (?:the|their)|[,.!#]|$)', caption, re.I)
+            if subject:
+                match = caption_duplicate(subject.group(1), models)
+                if match:
+                    entry.update(status='skipped', model_duplicate=match, reason='原帖明确参赛车型已重复')
+                    return
         if reason:
             entry.update(status='skipped', reason=reason)
             return
@@ -615,6 +627,14 @@ def run_pipeline(args, backend=None):
                 if any(q.get('series_id') == RACE_HUMOR for q in state['queries']):
                     events = race_index(records, queued, approved, other_approved)
                     state['covered_race_queries'] = covered_queries(state['queries'], state['items'], events)
+                if state.get('race_leagues') == ['wrc']:
+                    retired = interview_queries(state['items'])
+                    for prior in registry['jobs'].values():
+                        previous = prior.get('checkpoint') or {}
+                        if previous.get('race_leagues') == ['wrc'] and previous.get('job_id') != state['job_id']:
+                            retired.update(interview_queries(previous.get('items', {})))
+                    state['retired_interview_queries'] = sorted(retired)
+                    state.setdefault('covered_race_queries', {}).update(dict.fromkeys(retired, '停车采访'))
                 candidates = [e for e in state['items'].values() if e['status'] in ('discovered', 'downloaded')]
                 for entry in candidates:
                     screen_series(entry, state)
@@ -625,11 +645,13 @@ def run_pipeline(args, backend=None):
                     if fresh or next_search(state):
                         candidates = fresh
                 candidates.sort(key=lambda e: (-e['series_priority'], -finder.to_int(e['item']['candidate'].get(args.sort))))
+                if state.get('race_leagues') == ['wrc']:
+                    candidates.sort(key=lambda e: wrc_clip_rank(e['item']['candidate']))
                 if candidates:
                     # 每次准备补足目标所需的审核任务，然后交给 Agent。
                     pending = 0
                     for entry in candidates:
-                        if len(approved) + pending >= state['target']:
+                        if (pending and state.get('race_leagues') == ['wrc']) or len(approved) + pending >= state['target']:
                             break
                         if time.monotonic() >= deadline:
                             break
