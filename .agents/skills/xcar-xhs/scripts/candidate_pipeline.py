@@ -27,7 +27,7 @@ from mechanism_duplicates import match_recent_mechanism, recent_mechanisms
 from monitor_telemetry import record_event
 from topic_planner import build_topic_plan, PILLARS, NEGATIVE_FILTERS, series_queries, reserved_source_ids
 from topic_policy import color_only_match, forbidden_topic_match
-from race_humor import (RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
+from race_humor import (LEAGUE_QUERIES, predownload_reason, RACE_FIELDS, RACE_TERMS, SERIES_ID as RACE_HUMOR, caption_incident,
                         covered_queries, incident_profile, race_index)
 from series_match import SERIES, assess_series, reviewed_series_conflict
 from xiaohongshu_publisher import latest_records, validate_content
@@ -216,6 +216,12 @@ def screen_caption(entry, state, models, mechanisms, race_events=None):
         return
     caption = entry['item']['candidate'].get('text', '')
     series = entry.get('series_id') or state['plan']['series_id']
+    if series == RACE_HUMOR:
+        reason = predownload_reason(caption, state.get('race_leagues', ()),
+                                    entry['item']['candidate'].get('author') or '')
+        if reason:
+            entry.update(status='skipped', reason=reason)
+            return
     if series == RACE_HUMOR and race_events:
         match = caption_incident(caption, race_events)
         if match:
@@ -467,6 +473,19 @@ def run_pipeline(args, backend=None):
             raise ValueError('恢复任务不能切换发布历史')
         for key, value in state.get('settings', {}).items():
             setattr(args, key, value)
+        league = getattr(args, 'race_league', None)
+        if league:
+            if state['plan']['series_id'] != RACE_HUMOR:
+                raise ValueError('--race-league requires --series race_humor')
+            if state.get('race_leagues', [league]) != [league]:
+                raise ValueError('恢复任务不能更换赛事')
+            if 'race_leagues' not in state:
+                if state['pages']:
+                    raise ValueError('已检索的任务不能改变赛事范围')
+                state['race_leagues'] = [league]
+                state['queries'] = [dict(query=q + ' filter:videos', explicit=True, cursor=None,
+                                         pages=0, done=False, series_id=RACE_HUMOR)
+                                    for q in LEAGUE_QUERIES[league]]
         retire_unscoped_queries(state, args.query)
         for query in args.query:
             if query not in [q['query'] for q in state['queries']]:
@@ -760,6 +779,7 @@ def run_pipeline(args, backend=None):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--race-league', choices=sorted(LEAGUE_QUERIES))
     parser.add_argument('--out', required=True, help='新任务目录；同目录再次运行恢复')
     parser.add_argument('--top', type=int, default=3)
     parser.add_argument('--min-selected', type=int, default=None,

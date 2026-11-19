@@ -22,6 +22,8 @@ license: MIT
 | 小红书发布 | `scripts/publish_pipeline.py`（复用现有计划与 Chrome 模块） | 固定复用 Chrome `Default`，只执行当前发布计划并登记，无人工确认环节 |
 | 效果复盘 | `scripts/note_metrics.py` | 24/72 小时记录六项真实数据，计算收藏率和每千次播放新增关注 |
 
+正赛趣事优先组合锦标赛、分站和可见插曲。指定 NASCAR、IndyCar、WRC 时分别以独立任务使用 `--series race_humor --race-league nascar|indycar|wrc`。同一事件已有合格素材就换事件。下载前按原帖筛掉明确的跨赛事、非正赛、预告及严重撞击；只写“撞了”或赛事归属不明的原帖仍须核对画面。补充检索词用 `--query`。
+
 ## 前置条件
 
 - **web-content-fetcher skill**：本仓库内 `.agents/skills/web-content-fetcher/`，提供共享会话与浏览器提取脚本。

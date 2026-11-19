@@ -1267,3 +1267,19 @@ def test_race_event_keeps_references_out_of_duplicate_counts():
     index = race_index([], [], [], [item])
     assert caption_incident('Abu Dhabi: leave me alone', index)['origin'] == '其他在制任务已核验'
     assert not caption_incident('This reminds me of Abu Dhabi: leave me alone', index)
+
+
+@pytest.mark.parametrize('league,caption,author,skip', [
+    ('nascar', 'The pace car just CRASHED into the sand barrels #NASCAR', '', False),
+    ('indycar', 'Herta on the last lap in the 1996 IndyCar World Series #F1', '', False),
+    ('wrc', 'Zebra crossing! #SafariRallyKenya #WRC', '', False),
+    ('indycar', 'Fast Friday at Indy #Indy500', '', True),
+    ('wrc', 'Power Stage starts at 13:18 #WRC', '', True),
+    ('nascar', 'A massive wreck at Daytona #NASCAR', '', True),
+    ('indycar', 'Grand Prix at Spa #F1', '', True),
+    ('indycar', 'Football fans in Detroit', '', True),
+    ('indycar', 'An unexpected visitor!', 'IndyCar', False),
+])
+def test_scoped_race_caption_before_download(league, caption, author, skip):
+    from race_humor import predownload_reason
+    assert bool(predownload_reason(caption, [league], author)) == skip

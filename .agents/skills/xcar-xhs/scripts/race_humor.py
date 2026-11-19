@@ -17,6 +17,43 @@ OFF_SESSION = re.compile(r'\b(?:(?:free |open |pit stop )?practice(?: session)?|
 RACE_FIELDS = ('race_event', 'race_phase', 'race_source_url', 'incident_evidence')
 
 
+# Lead with a championship, venue and a visible incident; rotate to another event after a hit.
+LEAGUE_QUERIES = {
+    'nascar': ('(NASCAR OR Chastain) Martinsville ("wall ride" OR "hail melon")',
+               '(NASCAR OR Busch) Charlotte Roval (sign OR banner)'),
+    'indycar': ('Zanardi Herta Corkscrew Laguna',
+                '(IndyCar OR Indy500) Indianapolis (balloon OR balloons)'),
+    'wrc': ('Meeke México (parking OR estacionamiento OR carpark)',
+            '(WRC OR Fourmaux) Sweden (helmet OR strap OR casque)'),
+}
+LEAGUE_NAMES = {'nascar': r'nascar', 'indycar': r'indycar|indy500', 'wrc': r'wrc|world rally championship',
+                'f1': r'f1|formula (?:one|1)', 'wec': r'wec|fiawec', 'nhra': r'nhra(?:finals)?'}
+
+
+def predownload_reason(text, leagues=(), author=''):
+    caption = re.sub(r'https?://\S+|@\w+', ' ', text, flags=re.I)
+    mentioned = {key for key, terms in LEAGUE_NAMES.items()
+                 if re.search(r'\b(?:' + terms + r')\b', caption, re.I)}
+    if leagues and mentioned and mentioned.isdisjoint(leagues):
+        return '原帖明确指向指定范围外的赛事'
+    if leagues and re.search(r'behind.the.scenes', caption, re.I):
+        return '原帖为幕后花絮或其他体育赛事'
+    if re.search(r'\b(?:fast friday|shakedown|warm.up session)\b', caption, re.I):
+        return '原帖明确为练习或试车'
+    if re.search(r'\b(?:official trailer|season promo|coming back.{0,80}see you in|'
+                 r'(?:stage.{0,80}(?:starts at|live at)|live at) \d{1,2}:\d{2})', caption, re.I | re.S):
+        return '原帖为预告或赛段开播宣传'
+    if re.search(r'\b(?:horrific crash|violent impact|hospitali[sz]ed after|'
+                 r'(?:heavy|massive|high.speed) (?:wreck|crash)|car.s impact with the (?:sand.filled )?safety barrels)\b|严重撞车', caption, re.I):
+        return '原帖描述严重撞击'
+    if leagues and not mentioned.intersection(leagues):
+        race_context = re.search(r'\b(?:race|rally|racing|lap|restart|pit|chicane|stage|driver|'
+                                 r'chastain|ogier|meeke|fourmaux|indy|dixon|pagenaud|zanardi|herta|will power)\b', caption, re.I)
+        if not race_context and not any(re.search(LEAGUE_NAMES[key], author, re.I) for key in leagues):
+            return '原帖和来源均缺少目标赛车赛事线索'
+    return assess_race(caption)[1]
+
+
 def assess_race(text):
     text = re.sub(r'https?://\S+|@\w+', ' ', text or '')
     # Negated labels do not identify the footage as staged or off-session.

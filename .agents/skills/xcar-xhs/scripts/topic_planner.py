@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from race_humor import LEAGUE_QUERIES
 from content_policy import SCORE_RUBRIC, SCORE_THRESHOLD, parse_datetime
 from publish_history import ACTIVE_STATUSES, PublishedHistory, default_history_path
 
@@ -189,6 +190,7 @@ PILLARS = {
                 "id": "race_humor",
                 "label": "正赛中的自然趣事",
                 "query_groups": (
+                    *(groups[0] for groups in LEAGUE_QUERIES.values()),
                     '("alone" OR "only car" OR "on his own") (Hamilton OR Lewis) (grid OR restart) (Hungary OR HungarianGP OR Hungaroring)',
                     '("pace car" OR "pacecar") (barrels OR "pit wall") (Phoenix OR NASCARChampionship)',
                     '("leave me alone" OR "I know what") (Kimi OR Raikkonen) (AbuDhabiGP OR "Abu Dhabi" OR Lotus)',
