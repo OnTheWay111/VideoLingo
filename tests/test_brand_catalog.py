@@ -228,15 +228,93 @@ def test_expanded_variant_can_resume_and_be_verified_separately_from_base_model(
     assert {row['item']['model'] for row in records} == {'Echo', 'Echo Sprint'}
 
 
-def test_model_collection_accepts_all_matching_videos_above_100(tmp_path):
-    args = args_for(tmp_path, brand='Test Motors', brand_catalog=None, model='Echo', max_pages=1)
-    posts = [video(1, 'Test Motors Echo driving POV', 91), video(2, 'Test Motors Echo car show', 92),
-             video(3, 'Test Motors Echo', 90), video(4, 'Other Motors Echo', 500)]
-    result = pipeline.collect_model(args, FakeBackend([(posts, None)]))
-    assert [item['source_id'] for item in result['materials']] == ['1', '2']
-    replay = FakeBackend([(posts, None)])
-    assert pipeline.collect_model(args, replay)['materials'] == []
-    assert replay.downloads == []
+def collection_copy(result, detail, body):
+    result.update(decision='approved', verification=dict(
+        presentation='car_only', visual_evidence='0:01 可见 Echo 及' + detail,
+        fact_evidence='原帖画面可核对' + detail))
+    result['publish'].update(title='Test Motors Echo' + detail, title_detail=detail, body=body,
+                             verifiable_fact=body, fact_source=result['source']['url'],
+                             discussion_question='你会留意这个设计吗？',
+                             topics=['TestMotors', 'TestMotorsEcho', detail])
+
+
+def test_model_collection_requires_copy_on_the_normal_cli_path(tmp_path, monkeypatch):
+    from monitor import pool_item_view
+
+    posts = [video(1, 'Test Motors Echo driving POV', 91), video(2, 'Test Motors Echo interior', 92),
+             video(3, 'Test Motors Echo', 90), video(4, 'Other Motors Echo', 500),
+             video(5, 'Test Motors Echo animation', 500)]
+    backend = FakeBackend([(posts, None)])
+    monkeypatch.setattr(pipeline, 'Backend', lambda args: backend)
+    args = args_for(tmp_path, brand='Test Motors', brand_catalog=None, model='Echo')
+    cli = ['--brand', 'Test Motors', '--model', 'Echo', '--out', args.out,
+           '--publish-history', args.publish_history, '--max-pages', '1']
+    out = pipeline.brand_catalog.model_dir(args.out, {'brand': args.brand, 'model': args.model}) / 'collection'
     queue = PublicationQueue(history_path=args.publish_history)
-    assert [entry['status'] for entry in queue.records()] == ['queued', 'queued']
+    receipt = out / 'candidate_receipt.json'
+    assert pipeline.main(cli) == 3
+    assert json.loads(receipt.read_text())['status'] == 'awaiting_review'
+    assert backend.downloads == ['1', '2', '5']
+    assert queue.records() == []
+
+    request = json.loads((out / 'review_request.json').read_text())
+    collection_copy(request['items']['1'], '座舱', '片段展示双环仪表。')
+    collection_copy(request['items']['2'], '车门', '')
+    request['items']['5'].update(decision='rejected', reason='游戏画面')
+    review_path = out / 'review.json'
+    review_path.write_text(json.dumps(request))
+    assert pipeline.main([*cli, '--review-file', str(review_path)]) == 3
+    waiting = json.loads(receipt.read_text())
+    assert waiting['status'] == 'awaiting_review'
+    assert waiting['failures'][0]['source_id'] == '2'
+    assert queue.records() == []
+
+    request = json.loads((out / 'review_request.json').read_text())
+    assert set(request['items']) == {'2'}
+    collection_copy(request['items']['2'], '车门', '片段展示无框车门。')
+    review_path.write_text(json.dumps(request))
+    assert pipeline.main([*cli, '--review-file', str(review_path)]) == 0
+    completed = json.loads(receipt.read_text())
+    assert completed['status'] == 'complete'
+    assert completed['rejected'] == [{'source_id': '5', 'reason': '游戏画面'}]
+    pool = queue.records()
+    assert [entry['source_id'] for entry in pool] == ['1', '2']
+    for published_copy, entry in zip(completed['materials'], pool):
+        assert entry['publish_hold'] and entry['collection_only'] and entry['status'] == 'queued'
+        displayed = pool_item_view(entry)
+        assert {key: displayed[key] for key in ('title', 'body', 'topics')} == {
+            key: published_copy[key] for key in ('title', 'body', 'topics')}
+        assert published_copy['title'] in (out / 'REPORT.md').read_text()
     assert queue.select() is None
+    assert pipeline.main(cli) == 0
+    assert backend.downloads == ['1', '2', '5']
+    assert len(backend.searches) == 1
+    assert queue.records() == pool
+
+
+def test_legacy_collection_copy_is_filled_in_place(tmp_path):
+    args = args_for(tmp_path, brand='Test Motors', brand_catalog=None, model='Echo', max_pages=1)
+    queue = PublicationQueue(history_path=args.publish_history)
+    out = pipeline.brand_catalog.model_dir(args.out, {'brand': args.brand, 'model': args.model}) / 'collection'
+    backend = FakeBackend()
+    candidate = pipeline.finder.normalize(video(1, 'Test Motors Echo interior', 200), None, [], False)
+    media, _ = backend.download(candidate, out)
+    original = dict(candidate=candidate, video=media, title='Test Motors Echo', brand=args.brand,
+                    model=args.model, recommendation='', topics=[])
+    entry = dict(source_id='1', revision=4, status='queued', out_dir=str(out),
+                 publish_hold=True, collection_only=True, item=original, title=original['title'])
+    queue.path.write_text(json.dumps({'entries': [entry]}))
+    (out / 'candidate_receipt.json').write_text(json.dumps({'status': 'complete', 'pages_used': 1}))
+
+    pending = pipeline.collect_model(args, backend)
+    assert pending['status'] == 'awaiting_review'
+    request = json.loads(Path(pending['review_request']).read_text())
+    collection_copy(request['items']['1'], '座舱', '片段展示双环仪表。')
+    args.review_file = str(out / 'review.json')
+    Path(args.review_file).write_text(json.dumps(request))
+    assert pipeline.collect_model(args, backend)['status'] == 'complete'
+    updated, = queue.records()
+    assert updated['revision'] == 5 and updated['publish_hold'] and updated['collection_only']
+    assert updated['item']['video'] == media
+    assert updated['item']['recommendation'] == '片段展示双环仪表。'
+    assert backend.searches == [] and backend.downloads == ['1']

@@ -6,7 +6,8 @@ import math
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from content_policy import SCORE_RUBRIC
+from content_policy import (SCORE_RUBRIC, normalized, validate_no_material_source_copy,
+                            validate_verifiable_content)
 from race_humor import SERIES_ID as RACE_HUMOR, validate_race_evidence
 
 EDITORIAL_REVIEW_VERSION = 1
@@ -24,6 +25,42 @@ def file_digest(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def validate_collection_review(item, target=None):
+    """采集素材需要核验和文案，发布评分由后续定稿流程负责。"""
+    title, body = item.get('title', ''), item.get('recommendation', '')
+    placeholders = {'待制作', '待填写', '待补充', '未填写正文', '未填写话题', '暂无', 'tbd', 'pending'}
+    if any(not isinstance(value, str) or not normalized(value) or normalized(value) in placeholders
+           for value in (title, body)):
+        raise ValueError('采集素材须填写视频标题和正文')
+    brand = item.get('brand', '')
+    model = item.get('model', '')
+    labels = {normalized(name + version)
+              for name in [brand, *((target or {}).get('brand_aliases') or [])]
+              for version in [model, *((target or {}).get('aliases') or [])]}
+    detail = normalized(item.get('title_detail'))
+    if (len(title) > 20 or normalized(title) in labels | {normalized(model)}
+            or not detail or detail in placeholders or detail == normalized(title)
+            or any(detail in label for label in labels)):
+        raise ValueError('采集标题最长 20 字，须包含本片的具体画面看点')
+    topics = item.get('topics')
+    if (not isinstance(topics, list) or not 3 <= len(topics) <= 6
+            or any(not isinstance(tag, str) or not tag.startswith('#') or not normalized(tag[1:])
+                   or normalized(tag[1:]) in placeholders for tag in topics)):
+        raise ValueError('采集素材须填写 3–6 个有效品牌、车型与主题话题')
+    validate_no_material_source_copy(body)
+    validate_verifiable_content(item)
+    evidence = item.get('verification') or {}
+    if evidence.get('presentation') != 'car_only' or evidence.get('status') != 'approved' or any(
+            not isinstance(evidence.get(key), str) or not evidence[key].strip()
+            or normalized(evidence[key]) in placeholders for key in ('visual_evidence', 'fact_evidence')):
+        raise ValueError('采集素材须通过实车核验，并记录画面与事实依据')
+    path = Path(item['video']['file'])
+    if not path.is_file() or not path.stat().st_size:
+        raise ValueError('采集视频文件不可用')
+    if evidence.get('video_sha256') != file_digest(path):
+        raise ValueError('审核素材哈希不匹配')
 
 
 def content_digest(item):

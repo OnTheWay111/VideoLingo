@@ -15,6 +15,7 @@ from pathlib import Path
 
 import finder
 import brand_catalog
+from brand_collection import collect_model, collection_target
 from caption_models import caption_duplicate, model_index
 from candidate_pool import enqueue_finalized
 from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
@@ -492,66 +493,6 @@ def write_manifest(state, out, history):
     atomic_json(out / 'publish.json', content)
 
 
-def collect_model(args, backend):
-    """按品牌车型采集每页所有达标视频。原始素材与编辑成稿共用候选池。"""
-    if not args.model or bool(args.brand) == bool(args.brand_catalog):
-        raise ValueError('指定 --model，并选择 --brand 或 --brand-catalog')
-    if args.brand_catalog:
-        catalog = brand_catalog.read_catalog(args.brand_catalog)
-        target = next((row for row in catalog['models']
-                       if normalized(row['model']) == normalized(args.model)), None)
-        if target is None:
-            raise ValueError('名录没有该车型：' + args.model)
-    else:
-        target = dict(brand=args.brand, model=args.model, aliases=[], brand_aliases=[])
-    out = brand_catalog.model_dir(args.out, target) / 'collection'
-    out.mkdir(parents=True, exist_ok=True)
-    queue = PublicationQueue(history_path=args.publish_history)
-    queries = [(q, None, 1) for q in brand_catalog.model_plan(target)['queries']]
-    pages = 0
-    seen = {entry['source_id'] for entry in queue.records()}
-    materials, failures = [], []
-    deadline = time.monotonic() + args.max_seconds
-    while queries and pages < (args.max_pages or brand_catalog.DEFAULT_MODEL_PAGE_LIMIT):
-        query, cursor, page = queries.pop(0)
-        args.operation_timeout = max(1, int(deadline - time.monotonic()))
-        if time.monotonic() >= deadline:
-            failures.append({'error': '达到执行时间预算'})
-            break
-        query_text = search_text(query, {'since': args.since})
-        tweets, following = backend.search(query_text, cursor, page, out)
-        pages += 1
-        if following and following != cursor:
-            queries.append((query, following, page + 1))
-        for tweet in tweets:
-            if not tweet.get('id') or str(tweet['id']) in seen:
-                continue
-            caption = tweet.get('text') or ''
-            makes = dict(model=target['brand'], aliases=target['brand_aliases'])
-            if not all(brand_catalog.matches_caption(t, caption) for t in (makes, target)):
-                continue
-            candidate = finder.normalize(tweet, None, [], False)
-            if not candidate:
-                continue
-            candidate['topic_series_id'] = BRAND_SERIES
-            if engagement_total(candidate) <= 100:
-                continue
-            video, error = backend.download(candidate, out)
-            if error or not video:
-                failures.append({'source_id': candidate['id'], 'error': error})
-                continue
-            item = dict(candidate=candidate, video=video, brand=target['brand'], model=target['model'],
-                        first_year=target.get('first_year'), title=target['brand'] + ' ' + target['model'],
-                        recommendation='', topics=[])
-            if queue.enqueue([item], out, collected=True):
-                materials.append(candidate_result(item))
-            seen.add(candidate['id'])
-    result = dict(status='incomplete' if failures else 'complete', pages_used=pages,
-                  materials=materials, failures=failures, published=0)
-    atomic_json(out / 'candidate_receipt.json', result)
-    return result
-
-
 def run_pipeline(args, backend=None):
     out = Path(args.out).resolve()
     catalog_path = getattr(args, 'brand_catalog', None)
@@ -1019,9 +960,9 @@ def run_pipeline(args, backend=None):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--brand', help='按品牌和车型采集原始视频')
+    parser.add_argument('--brand', help='按品牌和车型采集、审核并保留视频')
     parser.add_argument('--brand-catalog', help='已核实的品牌车型名录 JSON；--out 为品牌任务根目录')
-    parser.add_argument('--model', help='本次补池的名录正式车型名，每个车型独立入池一条')
+    parser.add_argument('--model', help='采集目标车型；同车型可收多条')
     parser.add_argument('--wrc-post', action='append', default=[], help='与简报事件交叉核对的原帖链接')
     parser.add_argument('--wrc-brief', help='已查证的单分站赛段简报 JSON')
     parser.add_argument('--race-league', choices=sorted(LEAGUE_QUERIES))
@@ -1067,7 +1008,13 @@ def main(argv=None):
         parser.error('时长/页大小必须为正；互动门槛和延迟不能为负')
     args.auto_topic = args.xiaohongshu = True
     try:
-        if (args.brand or args.brand_catalog) and not (args.cancel or args.review_file):
+        legacy_review = False
+        if args.brand_catalog and args.review_file:
+            target = collection_target(args)
+            legacy_state = read_json(brand_catalog.model_dir(args.out, target) / 'candidate_state.json', {})
+            review = read_json(args.review_file, {})
+            legacy_review = bool(legacy_state and legacy_state.get('job_id') == review.get('job_id'))
+        if (args.brand or args.brand_catalog) and not (args.cancel or legacy_review):
             result = collect_model(args, Backend(args))
         else:
             result = run_pipeline(args)

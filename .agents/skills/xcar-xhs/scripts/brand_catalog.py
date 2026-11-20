@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from content_policy import (BRAND_SERIES, MIN_TOTAL_ENGAGEMENT, SCORE_RUBRIC, SCORE_THRESHOLD,
                             engagement_counts, normalize_brand, normalized)
+from candidate_review import validate_collection_review
 from finalize import candidate_result
 from mechanism_duplicates import fold
 from publication_queue import PublicationQueue, WAITING_STATUSES
@@ -160,8 +161,7 @@ def coverage(catalog, root, entries):
                 continue
             try:
                 if entry.get("collection_only"):
-                    if not Path(item["video"]["file"]).is_file():
-                        raise ValueError("视频文件缺失")
+                    validate_collection_review(item, target)
                 else:
                     validate_content(deepcopy(item), publication=True)
             except (OSError, KeyError, ValueError) as exc:

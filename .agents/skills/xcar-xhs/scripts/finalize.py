@@ -67,7 +67,10 @@ def load_topics(item, tweet_id):
 
 
 def load_publish(path):
-    data = json.loads(Path(path).read_text())
+    return normalize_publish(json.loads(Path(path).read_text()))
+
+
+def normalize_publish(data):
     if not isinstance(data, dict):
         raise ValueError("publish.json 必须是以推文 ID 为键的 JSON 对象")
     result = {}

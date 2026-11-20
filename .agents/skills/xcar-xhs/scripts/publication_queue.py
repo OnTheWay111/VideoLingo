@@ -12,7 +12,7 @@ from pathlib import Path
 from content_policy import content_duplicate, content_identity, engagement_rejection_reason
 from publish_history import locked_history
 from publication_runtime import atomic_json
-from candidate_review import validate_review, validate_publication_review, file_digest
+from candidate_review import validate_collection_review, validate_review, validate_publication_review, file_digest
 
 DEFAULT_QUEUE_FILE = Path(__file__).resolve().parents[1] / "state" / "publish_queue.json"
 WAITING_STATUSES = {"queued", "planned"}
@@ -68,16 +68,16 @@ class PublicationQueue:
         with locked_queue(self.path) as handle:
             return read_queue(handle)["entries"]
 
-    def enqueue(self, items, out_dir, *, collected=False):
+    def enqueue(self, items, out_dir, *, collected=False, collection_revisions=None):
+        out_dir = str(Path(out_dir).resolve())
+        collection_revisions = collection_revisions or {}
         items = copy.deepcopy(items)
         for item in items:
             engagement_reason = engagement_rejection_reason(item)
             if engagement_reason:
                 raise ValueError("互动不足，禁止进入候选池：" + engagement_reason)
             if collected:
-                file = Path(item["video"]["file"])
-                if not file.is_file() or not file.stat().st_size:
-                    raise ValueError("采集视频文件不可用")
+                validate_collection_review(item)
             else:
                 validate_review(item)
         added = []
@@ -90,17 +90,33 @@ class PublicationQueue:
                     raise ValueError("入队素材缺少原帖 ID")
                 existing = next((entry for entry in entries if entry.get("source_id") == source_id), None)
                 if existing:
+                    if collected and source_id in collection_revisions:
+                        if (existing['status'] != 'queued' or existing['out_dir'] != out_dir
+                                or not existing.get('collection_only')):
+                            raise ValueError('只能补齐本任务中仍在排队的原始素材：' + source_id)
+                        if existing['item'] == item:
+                            continue
+                        if existing.get('revision', 1) != collection_revisions[source_id]:
+                            raise ValueError('候选版本冲突，请重新读取后更新：' + source_id)
+                        if existing['item']['video']['file'] != item['video']['file']:
+                            raise ValueError('补写素材须使用原视频：' + source_id)
+                        existing.update(item=item, title=item['title'], brand=item['brand'], model=item['model'],
+                                        modification_project=item.get('modification_project', ''),
+                                        revision=collection_revisions[source_id] + 1, updated_at=utc_now())
+                        added.append(existing)
                     continue
-                duplicate = content_duplicate(
+                if source_id in collection_revisions:
+                    raise ValueError('原始素材已从候选池移除：' + source_id)
+                duplicate = not collected and content_duplicate(
                     content_identity(item), entries, days=None, statuses=WAITING_STATUSES)
-                if duplicate and not collected:
+                if duplicate:
                     raise ValueError("素材 %s 与队列内容重复：%s（%s）" % (
                         source_id, duplicate["reason"], duplicate["title"] or duplicate["source_id"]))
                 verification = item.get("verification") or {}
                 entry = {
                     "revision": 1,
                     "source_id": source_id,
-                    "out_dir": str(Path(out_dir).resolve()),
+                    "out_dir": out_dir,
                     "status": "queued",
                     "enqueued_at": utc_now(),
                     "score": item.get("score", verification.get("score", 0)),
