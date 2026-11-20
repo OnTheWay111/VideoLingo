@@ -167,7 +167,7 @@ def test_brand_page_budget_carries_over_review_and_only_explicit_backfill_extend
 def test_brand_catalog_can_extend_one_lineage_across_all_requested_categories(tmp_path):
     path = make_catalog(tmp_path)
     data = json.loads(path.read_text())
-    categories = ('one_off', 'prototype', 'hybrid_concept', 'race_car', 'homologation',
+    categories = ('one_off', 'prototype', 'concept_car', 'hybrid_concept', 'race_car', 'homologation',
                   'limited_edition', 'special_edition', 'sports_car')
     for index, category in enumerate(categories):
         data['models'].append(dict(model=f'Echo Series {index}', first_year=1980 + index,
@@ -177,7 +177,7 @@ def test_brand_catalog_can_extend_one_lineage_across_all_requested_categories(tm
     path.write_text(json.dumps(data))
 
     result = coverage(read_catalog(path), tmp_path, [])
-    assert result['total'] == 10
+    assert result['total'] == 11
     assert 'expansion' not in result['models'][1]
     assert tuple(row['expansion']['category'] for row in result['models'][2:]) == categories
     data['models'][-1]['expansion']['category'] = 'cosmetic_package'
