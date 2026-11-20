@@ -68,13 +68,18 @@ class PublicationQueue:
         with locked_queue(self.path) as handle:
             return read_queue(handle)["entries"]
 
-    def enqueue(self, items, out_dir):
+    def enqueue(self, items, out_dir, *, collected=False):
         items = copy.deepcopy(items)
         for item in items:
             engagement_reason = engagement_rejection_reason(item)
             if engagement_reason:
                 raise ValueError("互动不足，禁止进入候选池：" + engagement_reason)
-            validate_review(item)
+            if collected:
+                file = Path(item["video"]["file"])
+                if not file.is_file() or not file.stat().st_size:
+                    raise ValueError("采集视频文件不可用")
+            else:
+                validate_review(item)
         added = []
         with locked_queue(self.path, create=True) as handle:
             data = read_queue(handle)
@@ -88,7 +93,7 @@ class PublicationQueue:
                     continue
                 duplicate = content_duplicate(
                     content_identity(item), entries, days=None, statuses=WAITING_STATUSES)
-                if duplicate:
+                if duplicate and not collected:
                     raise ValueError("素材 %s 与队列内容重复：%s（%s）" % (
                         source_id, duplicate["reason"], duplicate["title"] or duplicate["source_id"]))
                 verification = item.get("verification") or {}
@@ -105,6 +110,8 @@ class PublicationQueue:
                     "modification_project": item.get("modification_project") or "",
                     "item": item,
                 }
+                if collected:
+                    entry.update(publish_hold=True, collection_only=True)
                 entries.append(entry)
                 added.append(entry)
             if added:
@@ -141,7 +148,7 @@ class PublicationQueue:
         with locked_queue(self.path, create=True) as handle:
             data = read_queue(handle)
             entries = data["entries"]
-            excluded_source_ids.update(e['source_id'] for e in entries if e.get('publish_hold'))
+            excluded_source_ids.update(e['source_id'] for e in entries if e.get('publish_hold') or e.get('collection_only'))
             planned = next((entry for entry in entries if entry.get("status") == "planned"
                             and entry.get("source_id") not in excluded_source_ids), None)
             if planned:
@@ -227,6 +234,8 @@ class PublicationQueue:
                          revision=expected_revision + 1, updated_at=utc_now(), score=item['score'])
             for key in ('title', 'brand', 'model', 'modification_project'):
                 entry[key] = item.get(key, '')
+            if entry.pop('collection_only', False):
+                entry['publish_hold'] = False
             entry.pop('maintenance_reason', None)
             write_queue(handle, data)
             return entry
@@ -264,7 +273,7 @@ class PublicationQueue:
                 status, reason = '', ''
                 if not path.is_file() or path.stat().st_size == 0:
                     status, reason = 'invalid', '视频文件缺失或为空'
-                else:
+                elif not entry.get("collection_only"):
                     try:
                         validate_publication_review(item)
                         reviewed_at = item['verification'].get('reviewed_at') or entry['enqueued_at']

@@ -135,6 +135,8 @@ def coverage(catalog, root, entries):
     for target in catalog['models']:
         out = model_dir(root, target)
         path = out / 'candidate_receipt.json'
+        if (out / 'collection' / 'candidate_receipt.json').exists():
+            path = out / 'collection' / 'candidate_receipt.json'
         receipt = json.loads(path.read_text()) if path.exists() else {}
         row = {**target, 'out': str(out), 'status': receipt.get('status', 'pending')}
         if target['model'] in expansions:
@@ -157,11 +159,15 @@ def coverage(catalog, root, entries):
                 row['reason'] = '已有候选的四项互动未超过 100'
                 continue
             try:
-                validate_content(deepcopy(item), publication=True)
+                if entry.get("collection_only"):
+                    if not Path(item["video"]["file"]).is_file():
+                        raise ValueError("视频文件缺失")
+                else:
+                    validate_content(deepcopy(item), publication=True)
             except (OSError, KeyError, ValueError) as exc:
                 row['reason'] = str(exc)
                 continue
-            origin = 'this_job' if entry.get('out_dir') == str(out) else 'existing_pool'
+            origin = 'this_job' if entry.get('out_dir') in (str(out), str(out / 'collection')) else 'existing_pool'
             result = candidate_result(item)
             row.update(status='queued', origin=origin, source_url=item['candidate'].get('url'),
                        video=item['video']['file'], engagement=counts, total_engagement=sum(counts.values()),

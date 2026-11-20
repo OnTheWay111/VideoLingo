@@ -20,8 +20,8 @@ PILLAR_SCHEDULE = (
     "rare_models", "visual_experiment", "rare_models", "mechanical_contrast", "rare_models",
 )
 NEGATIVE_FILTERS = (
-    '-"car meet" -"car show" -"auto show" -"owner story" -"driving POV" '
-    '-"road trip" -Goodwood -SEMA -crypto -nft -giveaway'
+    '-"car meet" -"car show" -"auto show" -"owner story" '
+    '-Goodwood -SEMA -crypto -nft -giveaway'
 )
 PILLARS = {
     "rare_models": {

@@ -226,3 +226,17 @@ def test_expanded_variant_can_resume_and_be_verified_separately_from_base_model(
     assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
     records = PublicationQueue(history_path=args.publish_history).records()
     assert {row['item']['model'] for row in records} == {'Echo', 'Echo Sprint'}
+
+
+def test_model_collection_accepts_all_matching_videos_above_100(tmp_path):
+    args = args_for(tmp_path, brand='Test Motors', brand_catalog=None, model='Echo', max_pages=1)
+    posts = [video(1, 'Test Motors Echo driving POV', 91), video(2, 'Test Motors Echo car show', 92),
+             video(3, 'Test Motors Echo', 90), video(4, 'Other Motors Echo', 500)]
+    result = pipeline.collect_model(args, FakeBackend([(posts, None)]))
+    assert [item['source_id'] for item in result['materials']] == ['1', '2']
+    replay = FakeBackend([(posts, None)])
+    assert pipeline.collect_model(args, replay)['materials'] == []
+    assert replay.downloads == []
+    queue = PublicationQueue(history_path=args.publish_history)
+    assert [entry['status'] for entry in queue.records()] == ['queued', 'queued']
+    assert queue.select() is None
