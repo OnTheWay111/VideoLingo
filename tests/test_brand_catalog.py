@@ -15,7 +15,7 @@ def make_catalog(root):
     data = dict(brand='Test Motors', brand_aliases=['测试汽车'], founded_year=1950, as_of='2020-01-01',
                 source=source, coverage_gaps=[], models=[
                     dict(model='Echo', first_year=1970, source=source),
-                    dict(model='Aria', first_year=1960, aliases=['咏叹调'], source=source)])
+                    dict(model='Aria', first_year=1960, aliases=['咏叹调', 'Aria Classic'], source=source)])
     path = root / 'brand_catalog.json'
     path.write_text(json.dumps(data))
     return path
@@ -90,13 +90,14 @@ def test_brand_gate_at_enqueue_and_legacy_three_metric_gate(tmp_path):
     assert '60 ≤ 100' in engagement_rejection_reason(item)
 
 
-def test_catalog_rejects_shared_aliases_and_model_job_does_not_switch(tmp_path):
+def test_catalog_rejects_shared_aliases_and_model_can_exhaust_early(tmp_path):
     path = make_catalog(tmp_path)
-    args = args_for(tmp_path, brand_catalog=path, model='Aria')
-    backend = FakeBackend([([], None)] * 3)
+    args = args_for(tmp_path, brand_catalog=path, model='Echo')
+    backend = FakeBackend([([], None)] * 2)
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'exhausted' and backend.downloads == []
-    assert all('Aria' in q or '咏叹调' in q for q, _, _ in backend.searches)
+    assert (result['pages_used'], result['page_limit']) == (2, 3)
+    assert all('Echo' in q for q, _, _ in backend.searches)
     assert not Path(args.out, 'publish_queue.json').exists()
     data = json.loads(path.read_text())
     data['models'][0]['aliases'] = ['ARIA']
@@ -111,5 +112,53 @@ def test_brand_can_page_past_a_failed_first_page(tmp_path):
     backend = FakeBackend([([video(1, 'Echo', 90)], 'next'), ([], None),
                            ([video(2, 'Echo', 91)], None)])
     result = pipeline.run_pipeline(args, backend)
-    assert result['status'] == 'awaiting_review'
+    assert result['status'] == 'awaiting_review' and result['pages_used'] == 3
     assert backend.searches[-1][1:] == ('next', 2) and backend.downloads == ['2']
+    args.review_file = review(result, 'Test Motors', 'Echo')
+    assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
+    assert len(backend.searches) == 3
+
+
+def test_brand_page_budget_carries_over_review_and_only_explicit_backfill_extends_it(tmp_path):
+    path = make_catalog(tmp_path)
+    args = args_for(tmp_path, brand_catalog=path, model='Aria')
+    backend = FakeBackend([([video(1, 'Aria', 90)], 'next-official'), ([], None),
+                           ([video(2, 'Aria', 92)], 'next-media')])
+
+    pending = pipeline.run_pipeline(args, backend)
+    assert pending['status'] == 'awaiting_review' and pending['pages_used'] == 3
+    assert backend.downloads == ['2']
+    queries = [query for query, _, _ in backend.searches]
+    assert queries[0].endswith('"Aria" filter:videos')
+    assert queries[1].endswith('"咏叹调" filter:videos')
+    assert queries[2].endswith('filter:media')
+    args.review_file = review_all(Path(pending['review_request']).parent, reject=['2'])
+    stopped = pipeline.run_pipeline(args, backend)
+    assert stopped['status'] == 'budget_exhausted' and stopped['budget'] == 'search_pages'
+    assert (stopped['pages_used'], stopped['page_limit'], stopped['awaiting_review']) == (3, 3, 0)
+
+    catalog = read_catalog(path)
+    queue = PublicationQueue(history_path=args.publish_history)
+    aria, echo = coverage(catalog, args.out, queue.records())['models']
+    assert (aria['status'], aria['budget'], aria['pages_used']) == ('budget_exhausted', 'search_pages', 3)
+    assert aria['reason'] and aria['out'] == str(Path(pending['review_request']).parent)
+    assert echo['status'] == 'pending'
+    echo_args = args_for(tmp_path, brand_catalog=path, model='Echo')
+    echo_backend = FakeBackend([([video(3, 'Echo', 91)], None)])
+    pending = pipeline.run_pipeline(echo_args, echo_backend)
+    assert (pending['status'], pending['pages_used']) == ('awaiting_review', 1)
+    echo_args.review_file = review(pending, 'Test Motors', 'Echo')
+    assert pipeline.run_pipeline(echo_args, echo_backend)['status'] == 'complete'
+
+    backfill = '"Test Motors" "Aria" road test filter:videos'
+    args.review_file, args.query = None, [backfill]
+    assert pipeline.run_pipeline(args, backend)['budget'] == 'search_pages'
+    assert len(backend.searches) == 3
+    args.max_pages = 4
+    backend.pages = [([video(4, 'Aria', 91)], None)]
+    pending = pipeline.run_pipeline(args, backend)
+    assert (pending['status'], pending['pages_used'], pending['page_limit']) == ('awaiting_review', 4, 4)
+    assert backend.searches[-1] == (backfill, None, 1)
+    args.review_file = review(pending, 'Test Motors', 'Aria')
+    assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
+    assert coverage(catalog, args.out, queue.records())['status'] == 'complete'

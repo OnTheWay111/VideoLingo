@@ -23,7 +23,7 @@ from tests.test_x_car_video_finder import scored_publish
 def args_for(tmp_path, **values):
     args = pipeline.finder.build_parser().parse_args([])
     defaults = dict(out=str(tmp_path / 'batch'), publish_history=str(tmp_path / 'history.jsonl'),
-                    review_file=None, max_pages=12, max_downloads=15, max_seconds=60,
+                    review_file=None, max_pages=None, max_downloads=15, max_seconds=60,
                     cancel=False, retry_failed=False, top=3)
     defaults.update(values)
     for key, value in defaults.items():

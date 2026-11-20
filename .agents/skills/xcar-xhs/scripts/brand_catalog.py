@@ -17,6 +17,9 @@ from topic_planner import PILLARS, STRATEGY_VERSION
 from xiaohongshu_publisher import validate_content
 
 
+DEFAULT_MODEL_PAGE_LIMIT = 3
+
+
 def names(value, label):
     if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
         raise ValueError(label + ' 必须是字符串数组')
@@ -88,14 +91,14 @@ def matches_caption(target, text):
 
 
 def model_plan(target):
-    # 分开检索各市场名称，保留车型限定；不设置点赞下限。
+    # 默认三页优先覆盖正式名、常用别名和媒体检索。
     makes = [target['brand'], *target['brand_aliases']]
     models = [target['model'], *target['aliases']]
     def phrase(value):
         return '"' + value.replace('"', ' ').strip() + '"'
     brand_terms = '(' + ' OR '.join(map(phrase, makes)) + ')'
     queries = [brand_terms + ' ' + phrase(model) + ' filter:videos' for model in models]
-    queries.append(brand_terms + ' (' + ' OR '.join(map(phrase, models)) + ') filter:media')
+    queries.insert(2, brand_terms + ' (' + ' OR '.join(map(phrase, models)) + ') filter:media')
     return dict(mode='brand_catalog', brand_target=target, series_id=BRAND_SERIES,
                 series_label='品牌历代车型', pillar='rare_models', pillar_label=PILLARS['rare_models']['label'],
                 strategy_version=STRATEGY_VERSION, series_episode=None, score_threshold=SCORE_THRESHOLD,
@@ -111,6 +114,7 @@ def coverage(catalog, root, entries):
         path = out / 'candidate_receipt.json'
         receipt = json.loads(path.read_text()) if path.exists() else {}
         row = {**target, 'out': str(out), 'status': receipt.get('status', 'pending')}
+        row.update({key: receipt[key] for key in ('pages_used', 'page_limit', 'budget') if key in receipt})
         if row['status'] == 'complete':
             row['status'] = 'missing_from_pool'
         if receipt.get('error'):

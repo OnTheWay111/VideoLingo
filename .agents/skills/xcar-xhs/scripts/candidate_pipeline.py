@@ -209,7 +209,7 @@ def next_search(state):
     if state.get('plan', {}).get('brand_target'):
         # 单车型只有一个名额，不能以首页已有批准作为翻页前提。
         active = [q for q in state['queries'] if not q['done'] and q.get('empty_pages', 0) < EMPTY_PAGE_LIMIT]
-        return min(active, key=lambda q: q['pages'], default=None)
+        return min(active, key=lambda q: (q['pages'], not q.get('explicit')), default=None)
     streaks = state.get('empty_series_pages', {})
     available = [q for q in state['queries'] if streaks.get(q.get('series_id'), 0) < EMPTY_PAGE_LIMIT
                  or (q.get('explicit') and q['pages'] == 0)]
@@ -554,6 +554,10 @@ def run_pipeline(args, backend=None):
                          path=history.path.with_name('monitor_events.jsonl'))
         elif state['history_file'] != str(history.path):
             raise ValueError('恢复任务不能切换发布历史')
+        brand_job = bool(state['plan'].get('brand_target'))
+        max_pages = args.max_pages
+        if max_pages is None:
+            max_pages = brand_catalog.DEFAULT_MODEL_PAGE_LIMIT if brand_job else 12
         for key, value in state.get('settings', {}).items():
             setattr(args, key, value)
         league = getattr(args, 'race_league', None)
@@ -608,7 +612,7 @@ def run_pipeline(args, backend=None):
             atomic_json(state_path, state)
             atomic_json(out / 'topic_plan.json', state['plan'])
 
-        def finish(status, error=None):
+        def finish(status, error=None, *, budget=None):
             state['status'] = status
             checkpoint()
             requests = review_request(state, out)
@@ -628,6 +632,10 @@ def run_pipeline(args, backend=None):
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
                       'error': error, 'enqueue': state.get('enqueue')}
+            if brand_job:
+                result['page_limit'] = max_pages
+            if budget:
+                result['budget'] = budget
             atomic_json(out / 'candidate_receipt.json', result)
             return result
 
@@ -825,17 +833,23 @@ def run_pipeline(args, backend=None):
                     if pending:
                         return finish('awaiting_review')
                     continue
+                # 先审完页内候选，再应用车型页上限。页数取已持久化的累计值。
+                if brand_job and state['pages'] >= max_pages:
+                    return finish('budget_exhausted', '已达到该车型搜索页上限，未选到合格素材',
+                                  budget='search_pages')
                 query = next_search(state)
-                if query is None and state['pages'] < args.max_pages and extend_refill(state):
+                if query is None and state['pages'] < max_pages and extend_refill(state):
                     excluded = {e['source_id'] for e in queued if e['status'] in ('withdrawn', 'invalid', 'needs_review')}
                     state['query_yield'] = prior_query_yield(registry['jobs'].values(), state, excluded)
                     checkpoint()
                     continue
-                if query is None and state.get('fallback_series') and state['pages'] >= args.max_pages:
+                if query is None and state.get('fallback_series') and state['pages'] >= max_pages:
                     return finish('budget_exhausted', '页预算耗尽，恢复后可继续切换系列')
                 if query is None:
+                    if brand_job:
+                        return finish('exhausted', '该车型可用检索式及游标已用尽，未选到合格素材')
                     return finish('exhausted', '同系列检索已耗尽；可添加 --query 继续，不能降低核验标准')
-                if state['pages'] >= args.max_pages:
+                if state['pages'] >= max_pages:
                     return finish('budget_exhausted', '累计搜索页预算耗尽；可提高 --max-pages 后恢复')
                 tweets, cursor = backend.search(search_text(query['query'], vars(args)),
                                                 query['cursor'], query['pages'] + 1, out)
@@ -945,7 +959,8 @@ def build_parser():
     parser.add_argument('--auth-file')
     finder.add_session_arguments(parser, finder.DEFAULT_WEB_SESSION, finder.DEFAULT_BROWSER_PROFILE)
     parser.add_argument('--review-file', help='Agent 完成的 review_request.json 副本')
-    parser.add_argument('--max-pages', type=int, default=12)
+    parser.add_argument('--max-pages', type=int,
+                        help='累计成功搜索页数上限，常规任务默认 12，品牌名录每车型默认 3')
     parser.add_argument('--max-downloads', type=int, default=15)
     parser.add_argument('--max-seconds', type=int, default=600)
     parser.add_argument('--cancel', action='store_true')
@@ -959,7 +974,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.brand_catalog:
         args.top = args.min_selected = 1
-    if args.top < (args.min_selected or 3) or args.max_pages < 1 or args.max_downloads < 3 or args.max_seconds < 1:
+    if (args.top < (args.min_selected or 3) or (args.max_pages is not None and args.max_pages < 1)
+            or args.max_downloads < 3 or args.max_seconds < 1):
         parser.error('目标条数不能小于 --min-selected（默认 3）；页数、下载和时间预算必须为正且下载预算至少 3')
     if args.max_duration <= 0 or args.min_likes < 0 or args.min_reposts < 0 or args.limit < 1 or args.delay < 0:
         parser.error('时长/页大小必须为正；互动门槛和延迟不能为负')
