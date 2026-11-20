@@ -398,7 +398,7 @@ python3 .agents/skills/xcar-xhs/scripts/note_metrics.py record \
 python3 .agents/skills/xcar-xhs/scripts/monitor.py
 ```
 
-打开 `http://127.0.0.1:8769/overview` 查看运营总览，通过左侧导航或 `http://127.0.0.1:8769/candidate-pool` 进入独立候选池页面。运营总览按 `Asia/Shanghai` 自然日统计首次入池和确认发布，展示未结束候选/发布任务的全流程、当前阶段、审核缺口、搜索页数、下载尝试和阻塞原因。旧任务没有业务事件时，对应环节显示“未采集”，不通过文件数量反推。
+打开 `http://127.0.0.1:8769/overview` 查看运营总览，通过左侧导航或 `http://127.0.0.1:8769/candidate-pool` 进入独立候选池页面。运营总览按 `Asia/Shanghai` 自然日统计首次入池和确认发布，并按品牌展示当前候选池数量与累计已发布数量；候选池统计 `queued + planned`，发布统计发布历史中当前最终状态为 `published` 的记录，中英文品牌别名按内容策略归一合并。点击品牌名称进入详情页，按候选池列表的信息结构查看该品牌的候选池和已发布视频；历史记录没有保存的正文、话题或互动字段显示“未采集”，不使用模拟值。旧任务没有业务事件时，对应环节显示“未采集”，不通过文件数量反推。
 
 需要长期运行时，安装为当前 macOS 用户的 `launchd` 服务。它会在登录后自动启动，异常退出后自动拉起；日志写入 `~/Library/Logs/xcar-xhs/`：
 

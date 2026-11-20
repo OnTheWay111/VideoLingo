@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from monitor_telemetry import (DEFAULT_EVENT_FILE, DEFAULT_USAGE_FILE, FLOW_STAGES,
                                read_jsonl, record_usage)
+from content_policy import normalize_brand
 from publication_queue import default_queue_path
 from publish_history import PublishedHistory, default_history_path
 from xiaohongshu_publisher import latest_records
@@ -117,6 +118,83 @@ def pool_item_view(entry):
     }
 
 
+def entry_brand(entry):
+    item = entry.get("item") or {}
+    return str(entry.get("brand") or item.get("brand") or "").strip()
+
+
+def entry_brand_key(entry):
+    brand = entry_brand(entry)
+    return normalize_brand(brand) if brand else "__unlabeled__"
+
+
+def brand_statistics(queue, history):
+    """按统一品牌口径汇总当前候选库存和累计发布记录。"""
+    buckets = {}
+
+    def add(entry, field):
+        raw_brand = entry_brand(entry)
+        key = entry_brand_key(entry)
+        row = buckets.setdefault(key, {
+            "key": key,
+            "brand": raw_brand or "未标注",
+            "candidate_count": 0,
+            "published_count": 0,
+        })
+        # 同一品牌同时存在中文别名和英文正式名时，优先展示英文正式名。
+        if raw_brand and raw_brand.isascii() and not row["brand"].isascii():
+            row["brand"] = raw_brand
+        row[field] += 1
+
+    for entry in queue:
+        if entry.get("status") in ("queued", "planned"):
+            add(entry, "candidate_count")
+    for entry in history:
+        if entry.get("status") == "published":
+            add(entry, "published_count")
+    return sorted(buckets.values(), key=lambda row: (
+        -row["candidate_count"], -row["published_count"], row["brand"].casefold()))
+
+
+def brand_detail_item(entry, kind):
+    item = entry.get("item") or {}
+    candidate = item.get("candidate") or {}
+    topics = item.get("topics") or entry.get("topics") or []
+    if isinstance(topics, str):
+        topics = topics.split()
+
+    def metric(*values):
+        value = next((candidate_value for candidate_value in values
+                      if candidate_value not in (None, "")), None)
+        return int(value) if value is not None else None
+
+    source_url = candidate.get("url") or entry.get("source_url") or ""
+    if urlparse(source_url).scheme not in ("http", "https"):
+        source_url = ""
+    return {
+        "kind": kind,
+        "source_id": str(entry.get("source_id") or candidate.get("id") or ""),
+        "status": entry.get("status") or ("published" if kind == "published" else "queued"),
+        "title": entry.get("title") or item.get("title") or "未命名视频",
+        "body": item.get("body") or item.get("recommendation")
+                or entry.get("body") or entry.get("recommendation") or "",
+        "topics": [str(topic) for topic in topics],
+        "likes": metric(candidate.get("likes"), candidate.get("favorite_count"),
+                        entry.get("likes"), entry.get("favorite_count")),
+        "replies": metric(candidate.get("replies"), candidate.get("reply_count"),
+                          entry.get("replies"), entry.get("reply_count")),
+        "reposts": metric(candidate.get("reposts"), candidate.get("retweet_count"),
+                          entry.get("reposts"), entry.get("retweet_count")),
+        "source_url": source_url,
+        "note_url": entry.get("note_url") or "",
+        "out_dir": entry.get("out_dir") or "",
+        "directory_name": Path(entry.get("out_dir") or "").name,
+        "openable": kind == "candidate",
+        "occurred_at": (entry.get("enqueued_at") if kind == "candidate" else
+                        entry.get("published_at") or entry.get("recorded_at")),
+    }
+
+
 class MonitorData:
     def __init__(self, queue_file=None, history_file=None, event_file=None, usage_file=None):
         self.history_file = Path(history_file or default_history_path()).resolve()
@@ -150,7 +228,7 @@ class MonitorData:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"source_id": source_id, "folder": str(folder)}
 
-    def snapshot(self, day=None):
+    def snapshot(self, day=None, brand=None):
         selected_day = day or datetime.datetime.now(TIMEZONE).date().isoformat()
         datetime.date.fromisoformat(selected_day)
         errors = []
@@ -203,6 +281,23 @@ class MonitorData:
             event_counts[key] = event_counts.get(key, 0) + 1
         token = {flow: self._usage_summary(flow, day_usage) for flow in FLOW_STAGES}
         links_available = sum(bool(row.get("note_url")) for row in published)
+        brand_rows = brand_statistics(queue, history)
+        brand_key = str(brand or "").strip()
+        brand_detail = None
+        if brand_key:
+            brand_summary = next((row for row in brand_rows if row["key"] == brand_key), None)
+            detail_items = [brand_detail_item(row, "candidate") for row in pending_pool
+                            if entry_brand_key(row) == brand_key]
+            detail_items.extend(brand_detail_item(row, "published") for row in history
+                                if row.get("status") == "published"
+                                and entry_brand_key(row) == brand_key)
+            detail_items.sort(key=lambda row: (
+                row["kind"] != "candidate", row.get("occurred_at") or ""), reverse=False)
+            brand_detail = {
+                "key": brand_key,
+                "brand": brand_summary["brand"] if brand_summary else "未找到品牌",
+                "items": detail_items,
+            }
         return {
             "date": selected_day,
             "timezone": "Asia/Shanghai",
@@ -229,6 +324,8 @@ class MonitorData:
             },
             "token": token,
             "active_tasks": self._active_tasks(jobs, queue, events),
+            "brand_stats": brand_rows,
+            "brand_detail": brand_detail,
             "pending_pool_items": [pool_item_view(row) for row in pending_pool],
             "candidate_items": [item_view(row, "candidate", usage_by_job) for row in candidates],
             "published_items": [item_view(row, "publish", usage_by_job) for row in published],
@@ -344,11 +441,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/overview":
             try:
-                self.send_json(self.data.snapshot(parse_qs(parsed.query).get("date", [None])[0]))
+                query = parse_qs(parsed.query)
+                self.send_json(self.data.snapshot(query.get("date", [None])[0],
+                                                  query.get("brand", [None])[0]))
             except (OSError, ValueError) as exc:
                 self.send_json({"error": str(exc)}, 400)
             return
-        page_routes = ("", "/", "/overview", "/candidate-pool")
+        page_routes = ("", "/", "/overview", "/candidate-pool", "/brand")
         target = "index.html" if parsed.path in page_routes else parsed.path.lstrip("/")
         path = (self.static_dir / target).resolve()
         if self.static_dir not in path.parents and path != self.static_dir:

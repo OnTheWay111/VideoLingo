@@ -27,11 +27,13 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
     write_json(queue, {'version': 1, 'entries': [{
         'source_id': 'candidate-1', 'status': 'queued', 'publish_hold': True,
         'enqueued_at': '2026-11-15T16:15:00+00:00', 'title': '真实候选', 'score': 88,
+        'brand': 'BMW',
         'item': {'candidate_job_id': 'job-1', 'candidate': {
             'id': 'candidate-1', 'url': 'https://x.com/car/status/candidate-1'}},
     }]})
     history.write_text(json.dumps({
         'source_id': 'published-1', 'status': 'published', 'title': '真实发布',
+        'brand': '宝马',
         'published_at': '2026-11-16T01:00:00+00:00', 'note_url_pending': True,
     }, ensure_ascii=False) + '\n', encoding='utf-8')
     write_json(jobs, {'jobs': {'job-1': {
@@ -62,6 +64,14 @@ def test_snapshot_uses_shanghai_day_and_real_records(tmp_path):
     assert snapshot['stages']['candidate'][1]['count'] == 1
     assert snapshot['active_tasks'][0]['current_stage'] == 'visual_fact_review'
     assert snapshot['active_tasks'][0]['progress']['awaiting_review'] == 1
+    assert snapshot['brand_stats'] == [{
+        'key': 'bmw', 'brand': 'BMW', 'candidate_count': 1, 'published_count': 1,
+    }]
+    detail = MonitorData(queue, history, events, usage).snapshot('2026-11-16', 'bmw')['brand_detail']
+    assert detail['brand'] == 'BMW'
+    assert [(item['kind'], item['source_id']) for item in detail['items']] == [
+        ('candidate', 'candidate-1'), ('published', 'published-1'),
+    ]
     assert snapshot['pending_pool_items'][0] == {
         'publish_hold': True,
         'source_id': 'candidate-1', 'status': 'queued', 'title': '真实候选',
@@ -132,3 +142,13 @@ def test_launchd_service_definition_keeps_monitor_alive():
         '--host', '127.0.0.1', '--port', '8769',
     ]
     assert service_target(501) == 'gui/501/' + LABEL
+
+
+def test_monitor_page_replaces_active_tasks_with_brand_statistics():
+    html = (Path(__file__).parents[1] / 'docs/design/xcar-monitor/index.html').read_text()
+
+    assert '执行中的任务' not in html
+    assert '品牌维度统计' in html
+    assert '<th>品牌</th><th>候选池数量</th><th>已发布数量</th>' in html
+    assert 'href="/brand?brand=${encodeURIComponent(item.key)}"' in html
+    assert '查看该品牌的候选池与已发布视频' in html
