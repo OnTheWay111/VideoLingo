@@ -13,7 +13,7 @@
 复制本次 `review_request.json` 为 `review.json`，保留 `job_id`、候选 ID 与 `video_sha256`。每条填写：
 
 - `decision`: `approved`、`rejected` 或暂未完成的 `pending`。淘汰必须有 `reason`。
-- `publish`: 按 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)填写。`title` 为 `品牌_车型_主题`，`body` 对应最终 `recommendation`，讨论另存 `discussion_question`。`first_year` 是核实的车型首发年份，未知填 `null`；品牌任务自动沿用名录。`topics` 先写品牌和车型标签，再写与素材相关的主题标签。
+- `publish`: 按 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)填写。`title` 为 `品牌_车型_主题`，`body` 对应最终 `recommendation`，讨论另存 `discussion_question`。`first_year` 是核实的车型首发年份，未知填 `null`；品牌任务自动沿用名录。`topics` 先写独立的英文、中文品牌标签，再写车型和素材主题。
 - `verification.presentation`: 合格只能为 `car_only`；人物/屏幕讲解淘汰。
 - `verification.reviewer`、`reviewed_at`: 实际审核者标识及带时区 ISO 8601 时间。
 - `visual_evidence`、`first_three_seconds_evidence`: 对画面及前三秒的具体观察。默认五帧覆盖约 0.5、1.5、2.5 秒和中后段，必要时观看视频确认运动、声音和画面完整性。

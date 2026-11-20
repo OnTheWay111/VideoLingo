@@ -112,7 +112,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_history.py add \
 
 ## 五、标题、正文与发布计划
 
-新采集素材的标题使用 `品牌_车型_主题`，共 1–20 个字符，例如 `BMW_Z1_车门下滑`。正文保留已核实的事实与看点，讨论问题单独填写。话题按品牌、车型、其他具体主题排列。详见 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)。
+新采集素材的标题使用 `品牌_车型_主题`，共 1–20 个字符，例如 `BMW_Z1_车门下滑`。正文保留已核实的事实与看点，讨论问题单独填写。话题依次写独立英文品牌名、独立中文品牌名、车型和其他具体主题。详见 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)。
 
 每条入选必须填写：
 
@@ -120,7 +120,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_history.py add \
 - `verifiable_fact`：原样出现在正文中的可核验事实。
 - `fact_source`：实际核验过的 HTTP(S) 来源，不能编造。
 - `discussion_question`：一个基于正文事实的具体讨论问题，发布时追加一次。
-- `brand`、`model`、`modification_project`、`score_breakdown` 和 `topics`。新素材使用 3–6 个标签，已有候选兼容原话题数量。普通实车内容留空 `ai_disclosure`；AI 生成画面或概念动画用该字段填写专项说明。
+- `brand`、`model`、`modification_project`、`score_breakdown` 和 `topics`。新素材通常使用 4–6 个标签，中文品牌名待核实时使用 3–6 个。已有候选兼容原话题数量。普通实车内容留空 `ai_disclosure`；AI 生成画面或概念动画用该字段填写专项说明。
 
 定稿：
 
