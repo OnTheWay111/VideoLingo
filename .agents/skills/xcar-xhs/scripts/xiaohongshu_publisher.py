@@ -12,10 +12,12 @@ from candidate_review import validate_review, validate_publication_review
 
 from content_policy import (
     SCORE_THRESHOLD,
+    body_with_discussion,
     content_duplicate,
     content_identity,
     strip_material_source_disclosure,
     strip_preset_ai_disclosure,
+    strip_repeated_discussion,
     validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
@@ -217,11 +219,9 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
     if match:
         return {"status": "skipped", "reason": "already_published", "match": match, **base}
     disclosure = str(item.get("ai_disclosure") or "").strip()
-    sections = [body, "讨论：%s" % details["discussion_question"]]
-    if disclosure:
-        sections.append(disclosure)
-    sections.append(" ".join(topics))
-    full_text = "\n\n".join(sections)
+    question = details["discussion_question"]
+    body = strip_repeated_discussion(body, question)
+    full_text = body_with_discussion(body, question, disclosure) + "\n\n" + " ".join(topics)
     validate_no_material_source_copy(full_text)
     browser_actions = ["upload_video", "fill_title", "fill_body", "add_topics", "verify_upload"]
     if action in ("publish", "draft"):

@@ -157,16 +157,29 @@ def test_pipeline_review_then_enqueue_only_idempotent(tmp_path):
     assert len(backend.downloads) == 3
     assert not Path(tmp_path / 'publish_queue.json').exists()
     args.review_file = review_all(args.out)
+    review_path = Path(args.review_file)
+    review = json.loads(review_path.read_text())
+    copy_fields = review['items']['1']['publish']
+    copy_fields.update(title='Honda_S660_660cc布局', topics=['#Honda', '#S660', '#中置发动机'], first_year=2015)
+    copy_fields['body'] += '讨论：' + copy_fields['discussion_question']
+    review_path.write_text(json.dumps(review, ensure_ascii=False))
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'complete', result
     assert result['enqueue']['added'] == 3
     assert result['published'] == 0
     entries = publication_queue.PublicationQueue(history_path=args.publish_history).records()
     assert {e['status'] for e in entries} == {'queued'}
+    material = next(row for row in result['materials'] if row['source_id'] == '1')
+    assert material['title'] == 'Honda_S660_660cc布局' and material['first_year'] == 2015
+    assert material['topics'] == ['#Honda', '#S660', '#中置发动机']
+    assert material['body'].count(copy_fields['discussion_question']) == 1
+    assert (material['likes'], material['bookmarks'], material['reposts'], material['replies']) == (101, 0, 1, 1)
+    assert material['source_url'] == tweet('1')['url']
+    assert Path(material['video_file']).is_file()
     assert all(not e['item'].get('topic_series_episode') for e in entries)
     assert not (Path(args.out) / 'xiaohongshu_publish_plan.json').exists()
     assert not Path(args.publish_history).exists()
-    pipeline.run_pipeline(args, backend)
+    assert pipeline.run_pipeline(args, backend)['materials'] == result['materials']
     assert len(backend.downloads) == 3
     assert len(publication_queue.PublicationQueue(history_path=args.publish_history).records()) == 3
 

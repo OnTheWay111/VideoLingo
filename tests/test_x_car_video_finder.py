@@ -215,6 +215,7 @@ def scored_publish(index, brand="Honda", model="S660", project=""):
 
 def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     selected = publish_item(tmp_path, "1")
+    selected["candidate"].update(likes=120, bookmarks=13, reposts=7, replies=3)
     rejected = publish_item(tmp_path, "2", "rejected", rejected=True)
     old_video = Path(selected["video"]["file"])
     old_frame = Path(selected["frames"][0]["file"])
@@ -224,11 +225,14 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     publish_path = tmp_path / "publish.json"
     publish_path.write_text(json.dumps({
         "1": {
-            "title": "奇怪汽车：飞行/翻滚",
-            "body": "可直接发布的入选正文",
+            "title": "Bugatti_Chiron_主动尾翼",
+            "body": "可直接发布的入选正文。讨论：你在意尾翼的哪种功能？",
             "brand": "Bugatti",
+            "model": "Chiron",
+            "first_year": 2016,
             "file_topic": "奇怪汽车：飞行/翻滚",
-            "topics": ["改装车", "#Goodwood 2026"],
+            "topics": ["Bugatti", "#Chiron", "#Goodwood 2026"],
+            "discussion_question": "你在意尾翼的哪种功能？",
             "ai_disclosure": "素材来自品牌官方 X 账号；选题、素材初筛及文字由 AI 辅助整理。",
         },
         "2": {
@@ -250,20 +254,20 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert not old_video.exists()
     assert not old_frame.exists()
     assert Path(selected["frames"][0]["file"]).name == "1.Bugatti_奇怪汽车：飞行-翻滚_1.jpg"
-    assert selected["title"] == "奇怪汽车：飞行/翻滚"
-    assert selected["recommendation"] == "可直接发布的入选正文"
+    assert selected["title"] == "Bugatti_Chiron_主动尾翼"
+    assert selected["recommendation"] == "可直接发布的入选正文。"
     assert selected["brand"] == "Bugatti"
+    assert selected["first_year"] == 2016
     assert selected["file_topic"] == "奇怪汽车：飞行/翻滚"
-    assert selected["topics"] == ["#改装车", "#Goodwood2026"]
+    assert selected["topics"] == ["#Bugatti", "#Chiron", "#Goodwood2026"]
     assert selected["ai_disclosure"] == ""
     assert saved["downloads"][0]["video"]["file"] == str(selected_path)
     report = (tmp_path / "REPORT.md").read_text()
-    assert "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |" in report
-    assert "[奇怪汽车：飞行/翻滚](<%s>)" % selected_path.as_posix() in report
-    assert "`1.Bugatti_奇怪汽车：飞行-翻滚.mp4`" in report
-    assert "`1.Peralta_淘汰视频标题.mp4`" in report
-    assert "#改装车 #Goodwood2026" in report
-    assert "可直接发布的入选正文" in report
+    assert "| 品牌 | 车型 | 发布年份 | 标题 | 正文 | 话题 | 点赞 | 收藏 | 转发 | 评论 | X 链接 |" in report
+    assert "| Bugatti | Chiron | 2016 | [Bugatti_Chiron_主动尾翼](<%s>)" % selected_path.as_posix() in report
+    assert "| #Bugatti #Chiron #Goodwood2026 | 120 | 13 | 7 | 3 | [X 原帖]" in report
+    assert "| Peralta | — | 待核实 | [淘汰视频标题]" in report
+    assert report.count("你在意尾翼的哪种功能？") == 1
     assert "画面非汽车" in report
 
     finalizer.finalize(tmp_path, publish_path)

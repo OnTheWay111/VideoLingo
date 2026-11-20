@@ -39,7 +39,7 @@ def _count(value):
         return 0
 
 
-def engagement_counts(item):
+def engagement_counts(item, *, include_bookmarks=False):
     """兼容旧候选的三项口径；品牌车型任务另计 X 收藏。"""
     candidate = item.get("candidate") if isinstance(item, dict) else None
     candidate = candidate if isinstance(candidate, dict) else (item or {})
@@ -48,7 +48,7 @@ def engagement_counts(item):
         "replies": _count(candidate.get("replies", candidate.get("reply_count"))),
         "reposts": _count(candidate.get("reposts", candidate.get("retweet_count"))),
     }
-    if BRAND_SERIES in (candidate.get("topic_series_id"), (item or {}).get("topic_series_id")):
+    if include_bookmarks or BRAND_SERIES in (candidate.get("topic_series_id"), (item or {}).get("topic_series_id")):
         counts["bookmarks"] = _count(candidate.get("bookmarks", candidate.get("bookmark_count")))
     return counts
 
@@ -84,6 +84,25 @@ def strip_preset_ai_disclosure(value):
     text = PRESET_AI_DISCLOSURE_RE.sub("", str(value or ""))
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip("；; \t\r\n")
+
+
+def strip_repeated_discussion(body, question):
+    """移除正文里重复的整句讨论问题，保留事实与原有段落。"""
+    def sentence_key(text):
+        text = re.sub(r"^\s*讨论\s*[:：]\s*", "", text)
+        return re.sub(r"\s+", "", text).rstrip("。！？!?")
+
+    question_key = sentence_key(question)
+    if not question_key:
+        return body
+    parts = re.split(r"(?<=[。！？!?])|(\n+)", body)
+    cleaned = "".join(part for part in parts if part and sentence_key(part) != question_key)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip() if cleaned != body else body
+
+
+def body_with_discussion(body, question, disclosure=""):
+    sections = [body, "讨论：" + question if question else "", disclosure]
+    return "\n\n".join(filter(None, sections))
 
 
 def validate_no_material_source_copy(value):

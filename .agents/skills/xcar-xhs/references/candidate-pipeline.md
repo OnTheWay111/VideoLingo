@@ -13,7 +13,7 @@
 复制本次 `review_request.json` 为 `review.json`，保留 `job_id`、候选 ID 与 `video_sha256`。每条填写：
 
 - `decision`: `approved`、`rejected` 或暂未完成的 `pending`。淘汰必须有 `reason`。
-- `publish`: 与 Skill 原 `publish.json` 相同的标题正文、品牌、车型、项目、文件主题、事实及来源、讨论问题、五项评分、2–6 个话题、必要时专项披露。body 对应最终 recommendation。
+- `publish`: 按 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)填写。`title` 为 `品牌_车型_主题`，`body` 对应最终 `recommendation`，讨论另存 `discussion_question`。`first_year` 是核实的车型首发年份，未知填 `null`；品牌任务自动沿用名录。`topics` 先写品牌和车型标签，再写与素材相关的主题标签。
 - `verification.presentation`: 合格只能为 `car_only`；人物/屏幕讲解淘汰。
 - `verification.reviewer`、`reviewed_at`: 实际审核者标识及带时区 ISO 8601 时间。
 - `visual_evidence`、`first_three_seconds_evidence`: 对画面及前三秒的具体观察。默认五帧覆盖约 0.5、1.5、2.5 秒和中后段，必要时观看视频确认运动、声音和画面完整性。
@@ -21,7 +21,7 @@
 - `score_reasons`: 必须包含 `first_three_seconds`、`knowledge_point`、`save_value`、`discussion_question`、`recent_diversity` 五项具体理由。
 - 新建候选任务生成 `verification.editorial`。`opening_action_at_sec` 写标题关键动作实际可见的时间点（0–3 秒），`first_three_seconds_evidence` 描述部件如何变化；没有可见动作填 `null`。汽车机关图鉴发现此值为空时淘汰并递补。`discussion_basis` 写正文问题对应的场景、设计取舍或车友经验，遇到泛偏好题先改写并重评。`follow_up_topic` 写同系列下一期可检索的具体车型、部件和问题，例如「丰田 Sera 与 BMW Z1 的开门方式，窄车位各需要多少空间？」。下一期线索用于选题，留在审核记录里。
 
-脚本验证媒体哈希，规范化文案后绑定内容哈希，包含新版选材证据。正文、选材证据或视频变化必须重审；单纯文件改名不会使审核失效。没有有效前三秒/中后段抽帧或证据不完整时阻断，不能直接入池。低分和明显禁选会被淘汰，重复项在定稿前再次核查。同批合格素材先按前三秒可见动作排序，再按讨论分和总分。已开始的旧任务可继续使用原审核格式。
+脚本验证媒体哈希，删除正文中重复的整句讨论问题，再绑定文案、已填写的首发年份和选材证据。正文、选材证据或视频变化必须重审；单纯文件改名不会使审核失效。没有有效前三秒/中后段抽帧或证据不完整时阻断，不能直接入池。低分和明显禁选会被淘汰，重复项在定稿前再次核查。同批合格素材先按前三秒可见动作排序，再按讨论分和总分。已开始的旧任务可继续使用原审核格式。
 
 ## 下载前的车型与机构去重
 

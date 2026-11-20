@@ -29,6 +29,8 @@ def file_digest(path):
 def content_digest(item):
     values = {key: item.get(key) or ({} if key == 'score_breakdown' else [] if key == 'topics' else '')
               for key in COPY_FIELDS}
+    if item.get('first_year') is not None:
+        values['first_year'] = item['first_year']
     editorial = (item.get('verification') or {}).get('editorial')
     if editorial is not None:
         values['editorial'] = editorial

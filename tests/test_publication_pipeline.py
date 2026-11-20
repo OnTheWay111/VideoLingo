@@ -161,7 +161,12 @@ def test_one_call_publishes_and_attaches_note_one_session(tmp_path, setup_plan, 
     assert result['published'] == 1
     assert fake_browser.sessions == fake_browser.published == 1
     assert history.check(plan['source_id'])['note_url'] == fake_browser.note_url
-    assert json.loads((tmp_path / 'publication_pipeline_receipt.json').read_text())['status'] == 'complete'
+    saved = json.loads((tmp_path / 'publication_pipeline_receipt.json').read_text())
+    row, = saved['results']
+    assert saved['status'] == 'complete'
+    assert row['publish_result'] == '成功' and row['brand'] == plan['brand']
+    assert row['title'] == plan['title'] and row['topics'] == plan['topics']
+    assert row['body'] == plan['body'] + '\n\n讨论：' + plan['discussion_question']
     assert 'metrics' in result
 
 
@@ -238,6 +243,7 @@ def test_record_failure_preserves_confirmed_and_restart_does_not_republish(tmp_p
     monkeypatch.setattr(chrome, 'record_result', fail)
     result = pipeline.run_pipeline(tmp_path, history)
     assert result['status'] == 'blocked'
+    assert result['results'][0]['publish_result'] == '成功'
     assert SubmissionJournal(history.path).read()['status'] == 'confirmed'
     assert fake_browser.published == 1
     monkeypatch.setattr(chrome, 'record_result', real_record)
@@ -255,6 +261,25 @@ def test_pre_upload_failure_releases_planned_item(tmp_path, setup_plan, fake_bro
     assert result['status'] == 'blocked'
     assert PublicationQueue(history_path=history.path).records()[0]['status'] == 'queued'
     assert fake_browser.published == 0
+
+
+@pytest.mark.parametrize('clicked, status', [(False, 'error'), (True, 'unconfirmed')])
+def test_failed_publish_reports_copy_and_preserves_submission_status(tmp_path, setup_plan, fake_browser,
+                                                              monkeypatch, clicked, status):
+    history, plan = setup_plan
+
+    def fail(self, out_dir, plan):
+        if clicked:
+            self.before_submit()
+            self.publish_clicked = True
+        raise RuntimeError('发布未完成')
+
+    monkeypatch.setattr(FakeChrome, 'publish_plan', fail)
+    result = pipeline.run_pipeline(tmp_path, history)
+    row, = result['results']
+    assert row['status'] == status and row['publish_result'] == '失败'
+    assert row['brand'] == plan['brand'] and row['title'] == plan['title']
+    assert row['topics'] == plan['topics'] and plan['discussion_question'] in row['body']
 
 
 def test_screenshot_error_cannot_erase_confirmed_success(tmp_path, setup_plan):

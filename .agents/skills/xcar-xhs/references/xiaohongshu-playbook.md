@@ -112,20 +112,15 @@ python3 .agents/skills/xcar-xhs/scripts/publish_history.py add \
 
 ## 五、标题、正文与发布计划
 
-标题控制在 **1–20 个字符**，采用“具体车型 + 一个可核验细节/问题”，减少“有多……”空泛模板。例如：
-
-- BMW Z1 的车门去哪了？
-- 660cc 的 AZ-1 凭什么好玩？
-- 这台丰田为什么塞着法拉利发动机？
-- CENTODIECI 继承了 EB110 哪三处？
+新采集素材的标题使用 `品牌_车型_主题`，共 1–20 个字符，例如 `BMW_Z1_车门下滑`。正文保留已核实的事实与看点，讨论问题单独填写。话题按品牌、车型、其他具体主题排列。详见 [Skill 文案规则](../SKILL.md#标题命名推荐话题与发布定稿必做)。
 
 每条入选必须填写：
 
 - `title_detail`：原样出现在标题中的具体细节。
 - `verifiable_fact`：原样出现在正文中的可核验事实。
 - `fact_source`：实际核验过的 HTTP(S) 来源，不能编造。
-- `discussion_question`：一个明确问题，发布时加入正文末尾。
-- `brand`、`model`、`modification_project`、`score_breakdown` 和 2–6 个具体 `topics`。普通实车内容不需要 `ai_disclosure`；只有 AI 生成画面、概念动画等需要明确披露的内容才填写专项说明。
+- `discussion_question`：一个基于正文事实的具体讨论问题，发布时追加一次。
+- `brand`、`model`、`modification_project`、`score_breakdown` 和 `topics`。新素材使用 3–6 个标签，已有候选兼容原话题数量。普通实车内容留空 `ai_disclosure`；AI 生成画面或概念动画用该字段填写专项说明。
 
 定稿：
 
@@ -151,7 +146,7 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 
 脚本在发送点击前持久化提交状态，标题和完整正文复读一致、上传完成、按钮启用后才执行。仅明确成功提示或成功页构成成功证据；笔记管理页不算成功。新旧入口共用执行锁，提交中断后先核验后台，不自动重发。
 
-`result_url` 是发布结果页，`note_url` 是真实公开地址。成功页未给出公开地址时，脚本按精确标题唯一匹配后台卡片实际链接；缺失或歧义保留 `note_url_pending` 并停止后续发布。`publication_pipeline_receipt.json` 保存结果与 24/72 小时到期任务。后台页面适配失败时按故障手册补查，不猜测地址。
+`result_url` 是发布结果页，`note_url` 是真实公开地址。成功页未给出公开地址时，脚本按精确标题唯一匹配后台卡片实际链接；缺失或歧义保留 `note_url_pending`。`publication_pipeline_receipt.json` 保存逐条文案、结果和 24/72 小时到期任务，按 [发布输出列表](../SKILL.md#发布输出列表)交付。后台页面适配失败时按故障手册补查，不猜测地址。
 
 实测问题与异常处理见 [Chrome 发布故障手册](xiaohongshu-chrome-troubleshooting.md)。
 

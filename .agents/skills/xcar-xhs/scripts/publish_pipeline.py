@@ -7,10 +7,35 @@ from pathlib import Path
 
 from chrome_xiaohongshu import ChromeSession, recover_note_urls, recover_submission, release_unsubmitted, run_locked
 from note_metrics import NoteMetrics
-from publication_runtime import atomic_json, execution_lock
+from publication_runtime import SubmissionJournal, atomic_json, execution_lock
 from publish_history import PublishedHistory, default_history_path
 from monitor_telemetry import record_event
 from xiaohongshu_publisher import build_plan, ensure_publish_available, save_plan, latest_records
+
+
+def publication_result(plan, result):
+    topics = plan['topics']
+    body = plan['full_text'].removesuffix('\n\n' + ' '.join(topics))
+    row = {**result, 'brand': plan['brand'], 'body': body, 'topics': topics}
+    if result['status'] != 'skipped':
+        row['publish_result'] = '成功' if result['status'] == 'published' else '失败'
+    return row
+
+
+def interrupted_result(plan, history, error):
+    result = {'source_id': plan['source_id'], 'title': plan['title'], 'status': 'error', 'error': str(error)}
+    try:
+        attempt = SubmissionJournal(history.path).read() or {}
+    except (OSError, ValueError):
+        attempt = {}
+    if (attempt.get('plan') or {}).get('source_id') == plan['source_id']:
+        if attempt.get('status') in ('confirmed', 'recorded'):
+            result.update(attempt.get('result') or {})
+            if result['status'] == 'published':
+                result['note_url_pending'] = not result.get('note_url')
+        elif attempt.get('status') == 'submitting':
+            result['status'] = 'unconfirmed'
+    return publication_result(plan, result)
 
 
 def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True,
@@ -24,6 +49,7 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
         raise ValueError('定稿输出目录不存在')
     results = []
     summary = {'status': 'complete', 'results': results, 'published': 0}
+    active_plan = None
     with execution_lock(history.path, profile):
         try:
             if action == 'preview':
@@ -45,6 +71,8 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                     ensure_publish_available(history, tweet_id)
                 for _ in range(max_items):
                     plan = build_plan(out_dir, tweet_id, history, action)
+                    if action == 'publish' and plan['status'] == 'ready':
+                        active_plan = plan
                     save_plan(out_dir, plan)
                     if plan['status'] != 'ready':
                         summary.update(status='skipped', plan=plan)
@@ -56,7 +84,12 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                                  path=history.path.with_name('monitor_events.jsonl'))
                     result = run_locked(out_dir, history, profile, headless,
                                         timeout=timeout, session=chrome)
-                    results.extend(result['results'])
+                    if action == 'publish':
+                        results.extend(publication_result(plan, row) for row in result['results'])
+                    else:
+                        results.extend(result['results'])
+                    active_plan = None
+                    summary['published'] += result['published']
                     record_event('publish', 'upload_submit', job_id, source_id,
                                  status=result.get('status', 'unknown'),
                                  event_id='publish:%s:upload_submit' % source_id,
@@ -65,7 +98,6 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                                  status=result.get('status', 'unknown'),
                                  event_id='publish:%s:result_verify' % source_id,
                                  path=history.path.with_name('monitor_events.jsonl'))
-                    summary['published'] += result['published']
                     if result['status'] != 'complete':
                         summary['status'] = 'incomplete'
                         break
@@ -81,6 +113,10 @@ def run_pipeline(out_dir, history, max_items=1, profile='Default', headless=True
                         summary['status'] = 'skipped'
                         break
         except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            if active_plan:
+                row = interrupted_result(active_plan, history, exc)
+                results.append(row)
+                summary['published'] += int(row['status'] == 'published')
             if action != 'preview':
                 release_unsubmitted(out_dir, history)
             summary.update(status='blocked', error=str(exc))

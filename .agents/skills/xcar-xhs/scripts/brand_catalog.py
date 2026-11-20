@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from content_policy import (BRAND_SERIES, MIN_TOTAL_ENGAGEMENT, SCORE_RUBRIC, SCORE_THRESHOLD,
                             engagement_counts, normalize_brand, normalized)
+from finalize import candidate_result
 from mechanism_duplicates import fold
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publish_history import default_history_path
@@ -161,8 +162,10 @@ def coverage(catalog, root, entries):
                 row['reason'] = str(exc)
                 continue
             origin = 'this_job' if entry.get('out_dir') == str(out) else 'existing_pool'
+            result = candidate_result(item)
             row.update(status='queued', origin=origin, source_url=item['candidate'].get('url'),
-                       video=item['video']['file'], engagement=counts, total_engagement=sum(counts.values()))
+                       video=item['video']['file'], engagement=counts, total_engagement=sum(counts.values()),
+                       title=result['title'], body=result['body'], topics=result['topics'])
             row.pop('reason', None)
             break
         rows.append(row)

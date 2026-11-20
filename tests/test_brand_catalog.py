@@ -51,6 +51,9 @@ def test_brand_models_are_reviewed_individually_and_resumable(tmp_path):
     result = pipeline.run_pipeline(args, backend)
     assert result['status'] == 'complete', result
     assert result['enqueue']['added'] == 1
+    material, = result['materials']
+    assert material['first_year'] == 1960 and material['model'] == 'Aria'
+    assert (material['likes'], material['bookmarks'], material['reposts'], material['replies']) == (0, 91, 9, 1)
     assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
     assert backend.downloads == ['2', '3']
 
@@ -61,6 +64,9 @@ def test_brand_models_are_reviewed_individually_and_resumable(tmp_path):
     assert progress['queued'] == 1 and progress['status'] == 'incomplete'
     assert progress['models'][0]['total_engagement'] == 101
     assert progress['models'][0]['origin'] == 'this_job'
+    assert progress['models'][0]['title'] == material['title']
+    assert progress['models'][0]['body'] == material['body']
+    assert progress['models'][0]['topics'] == material['topics']
     assert coverage(catalog, tmp_path / 'other', queue.records())['models'][0]['origin'] == 'existing_pool'
     assert queue.records()[0]['item']['model'] == 'Aria'
     args.model, args.review_file = 'Echo', None

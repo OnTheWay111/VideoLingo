@@ -156,6 +156,22 @@ def test_default_plan_publishes_without_additional_confirmation(tmp_path):
     assert (tmp_path / "plans" / "123.json").is_file()
 
 
+def test_publish_plan_removes_repeated_discussion_from_existing_audited_copy(tmp_path):
+    item = finalized_output(tmp_path)
+    body = item["recommendation"]
+    question = item["discussion_question"]
+    item["recommendation"] = body + "\n\n讨论：" + question
+    approve_item(item)
+    (tmp_path / "manifest.json").write_text(json.dumps({"downloads": [item]}, ensure_ascii=False))
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+
+    plan = xiaohongshu_publisher.build_plan(tmp_path, "123", history)
+
+    assert plan["body"] == body
+    assert plan["full_text"].count(question) == 1
+    assert item["verifiable_fact"] in plan["full_text"]
+
+
 def test_cli_defaults_to_publish_without_confirmation_flag(tmp_path, capsys):
     finalized_output(tmp_path)
 

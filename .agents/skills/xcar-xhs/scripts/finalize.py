@@ -10,11 +10,14 @@ import shutil
 from pathlib import Path
 
 from content_policy import (
+    body_with_discussion,
     content_duplicate,
     content_identity,
+    engagement_counts,
     normalize_brand,
     strip_material_source_disclosure,
     strip_preset_ai_disclosure,
+    strip_repeated_discussion,
     validate_no_material_source_copy,
     validate_score,
     validate_verifiable_content,
@@ -27,8 +30,8 @@ from topic_policy import explainer_video_match
 
 START_MARKER = "<!-- PUBLISH_TABLES_START -->"
 END_MARKER = "<!-- PUBLISH_TABLES_END -->"
-TABLE_HEADER = "| # | 标题名 | 推荐正文 | 推荐话题 | 文件名 | 本地路径 | 时长 | 点赞 | 原帖 |"
-TABLE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|"
+TABLE_HEADER = "| 品牌 | 车型 | 发布年份 | 标题 | 正文 | 话题 | 点赞 | 收藏 | 转发 | 评论 | X 链接 |"
+TABLE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|---|---|"
 
 
 def safe_title(title, max_length=48):
@@ -74,11 +77,14 @@ def load_publish(path):
         body = str(item.get("body") or "").strip()
         brand = str(item.get("brand") or "汽车").strip()
         file_topic = str(item.get("file_topic") or title).strip()
+        first_year = item.get("first_year")
         if not title or not body:
             raise ValueError("推文 %s 缺少 title 或 body" % tweet_id)
         validate_no_material_source_copy(body)
         if not brand or not file_topic:
             raise ValueError("推文 %s 的 brand 或 file_topic 不能为空" % tweet_id)
+        if first_year is not None and (type(first_year) is not int or not 1000 <= first_year <= datetime.date.today().year):
+            raise ValueError("推文 %s 的 first_year 必须是车型首发年份或 null" % tweet_id)
         result[str(tweet_id)] = {
             "title": title,
             "body": body,
@@ -88,6 +94,7 @@ def load_publish(path):
             "ai_disclosure": strip_preset_ai_disclosure(
                 strip_material_source_disclosure(item.get("ai_disclosure"))),
             "model": str(item.get("model") or "").strip(),
+            "first_year": first_year,
             "modification_project": str(item.get("modification_project") or "").strip(),
             "title_detail": str(item.get("title_detail") or "").strip(),
             "verifiable_fact": str(item.get("verifiable_fact") or "").strip(),
@@ -102,21 +109,37 @@ def markdown_cell(value):
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def render_row(item, index, rejected=False):
+def candidate_result(item):
     candidate = item["candidate"]
-    video = item["video"]
-    path = Path(video["file"])
-    title = "[%s](<%s>)" % (item["title"], path.resolve().as_posix())
+    question = item.get("discussion_question") or ""
+    body = strip_repeated_discussion(item["recommendation"], question)
+    return {
+        "source_id": str(candidate["id"]),
+        "brand": item["brand"],
+        "model": item.get("model"),
+        "first_year": item.get("first_year"),
+        "title": item["title"],
+        "body": body_with_discussion(body, question, item.get("ai_disclosure") or ""),
+        "topics": item["topics"],
+        **engagement_counts(item, include_bookmarks=True),
+        "source_url": candidate.get("url") or "",
+        "video_file": item["video"]["file"],
+    }
+
+
+def render_row(item, rejected=False):
+    result = candidate_result(item)
+    path = Path(result["video_file"]).resolve()
+    title = "[%s](<%s>)" % (result["title"], path.as_posix())
     cells = [
-        index,
+        result["brand"],
+        result["model"] or "—",
+        result["first_year"] or "待核实",
         title,
-        item["recommendation"],
-        " ".join(item["topics"]),
-        "`%s`" % path.name,
-        str(path.parent.resolve()),
-        "%.1fs" % video["duration"],
-        candidate["likes"],
-        "[链接](%s)" % candidate["url"],
+        result["body"],
+        " ".join(result["topics"]),
+        result["likes"], result["bookmarks"], result["reposts"], result["replies"],
+        "[X 原帖](<%s>)" % result["source_url"] if result["source_url"] else "—",
     ]
     if rejected:
         cells.append(item["reason"])
@@ -125,11 +148,11 @@ def render_row(item, index, rejected=False):
 
 def render_publish_tables(downloads, rejected):
     lines = [START_MARKER, "## 入选", "", TABLE_HEADER, TABLE_SEPARATOR]
-    lines.extend(render_row(item, index) for index, item in enumerate(downloads, 1))
+    lines.extend(render_row(item) for item in downloads)
     lines += ["", "## 被淘汰", ""]
     if rejected:
         lines += [TABLE_HEADER + " 淘汰原因 |", TABLE_SEPARATOR + "---|"]
-        lines.extend(render_row(item, index, True) for index, item in enumerate(rejected, 1))
+        lines.extend(render_row(item, rejected=True) for item in rejected)
     else:
         lines.append("无淘汰")
     lines.append(END_MARKER)
@@ -196,7 +219,7 @@ def apply_publish_content(items, publish):
         item["title"] = content["title"]
         item["recommendation"] = content["body"]
         for key in (
-            "brand", "model", "modification_project", "file_topic", "title_detail",
+            "brand", "model", "first_year", "modification_project", "file_topic", "title_detail",
             "verifiable_fact", "fact_source", "discussion_question", "topics", "ai_disclosure",
         ):
             item[key] = content[key]
@@ -256,7 +279,11 @@ def _finalize(out_dir, publish_file):
     if missing or unknown:
         raise ValueError("发布内容与 manifest 不一致；缺少=%s，多余=%s" % (missing, unknown))
 
-    apply_publish_content(manifest.get("downloads", []) + manifest.get("rejected", []), publish)
+    for item in items:
+        if not (item.get("verification") or {}).get("content_sha256"):
+            content = publish[str(item["candidate"]["id"])]
+            content["body"] = strip_repeated_discussion(content["body"], content["discussion_question"])
+    apply_publish_content(items, publish)
     reject_explainer_downloads(manifest)
     minimum_selected = manifest.get("minimum_selected")
     if minimum_selected is not None:

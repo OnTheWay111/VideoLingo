@@ -20,8 +20,8 @@ from candidate_pool import enqueue_finalized
 from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
                               content_digest, file_digest, validate_editorial_review)
 from content_policy import (BRAND_SERIES, SCORE_THRESHOLD, content_duplicate, content_identity,
-                            engagement_total, normalize_brand, normalized)
-from finalize import apply_publish_content, finalize, load_publish, recover_finalization
+                            engagement_total, normalize_brand, normalized, strip_repeated_discussion)
+from finalize import apply_publish_content, candidate_result, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
 from publication_runtime import atomic_json
 from query_schedule import YIELD_VERSION, narrow_mechanism_query, prior_query_yield, search_text, select_query
@@ -302,7 +302,7 @@ def review_request(state, out):
             'source': item['candidate'], 'video': item['video'], 'frames': item['frames'],
             'video_sha256': entry['video_sha256'],
             'decision': 'pending', 'reason': '',
-            'publish': {'title': '', 'body': '', 'brand': '', 'model': '', 'file_topic': '',
+            'publish': {'title': '', 'body': '', 'brand': '', 'model': '', 'first_year': None, 'file_topic': '',
                         'modification_project': '', 'title_detail': '', 'verifiable_fact': '',
                         'fact_source': '', 'discussion_question': '', 'topics': [], 'ai_disclosure': '',
                         'score_breakdown': {}},
@@ -312,6 +312,7 @@ def review_request(state, out):
                              'series_evidence': '', 'score_reasons': {}},
         }
         if state['plan'].get('brand_target'):
+            requests[source_id]['publish']['first_year'] = state['plan']['brand_target']['first_year']
             requests[source_id]['series_question'] = '画面中哪些特征与名录来源能确认指定车型？'
             expansion = state['plan'].get('brand_expansion')
             if expansion:
@@ -368,7 +369,9 @@ def apply_reviews(state, path, out, registry):
             if not brand_catalog.matches_identity(target, content[source_id]):
                 entry.update(status='rejected', reason='审核车型与本任务指定的品牌或车型不符')
                 continue
-            content[source_id].update(brand=target['brand'], model=target['model'])
+            content[source_id].update(brand=target['brand'], model=target['model'], first_year=target['first_year'])
+        copy_fields = content[source_id]
+        copy_fields['body'] = strip_repeated_discussion(copy_fields['body'], copy_fields['discussion_question'])
         approved = copy.deepcopy(item)
         apply_publish_content([approved], content)
         approved['verification'] = {**result.get('verification', {}), 'status': 'approved',
@@ -646,6 +649,13 @@ def run_pipeline(args, backend=None):
                       'recent_mechanism_skipped': sum('recent_duplicate' in e for e in state['items'].values()),
                       'review_request': str(out / 'review_request.json'), 'queue_file': str(queue.path),
                       'error': error, 'enqueue': state.get('enqueue')}
+            if status == 'complete':
+                added_ids = set((state.get('enqueue') or {}).get('source_ids', []))
+                added_ids.update(entry['source_id'] for entry in queue.records()
+                                 if entry['status'] == 'queued' and entry.get('out_dir') == str(out))
+                manifest = read_json(out / 'manifest.json', {})
+                result['materials'] = [candidate_result(item) for item in manifest.get('downloads', [])
+                                       if str(item['candidate']['id']) in added_ids]
             if brand_job:
                 result['page_limit'] = max_pages
             if budget:
