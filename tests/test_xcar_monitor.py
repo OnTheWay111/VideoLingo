@@ -148,6 +148,10 @@ def test_monitor_page_replaces_active_tasks_with_brand_statistics():
     html = (Path(__file__).parents[1] / 'docs/design/xcar-monitor/index.html').read_text()
 
     assert '执行中的任务' not in html
+    assert '当日业务环节' not in html
+    assert 'Token 分阶段' not in html
+    assert 'renderFlow' not in html
+    assert 'data-flow' not in html
     assert '品牌维度统计' in html
     assert '<th>品牌</th><th>候选池数量</th><th>已发布数量</th>' in html
     assert 'href="/brand?brand=${encodeURIComponent(item.key)}"' in html
