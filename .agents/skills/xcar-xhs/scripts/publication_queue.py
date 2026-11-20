@@ -148,23 +148,12 @@ class PublicationQueue:
                 return planned
             waiting = [entry for entry in entries if entry.get("status") == "queued"
                        and entry.get("source_id") not in excluded_source_ids]
-            waiting.sort(key=lambda entry: (-float(entry.get("score") or 0), entry.get("enqueued_at") or ""))
-            latest_identity = content_identity(latest_published or {})
-            latest_series = (latest_published or {}).get("topic_series_id") or ""
-            selected = None
-            for entry in waiting:
-                identity = content_identity(entry)
-                same_brand = (latest_identity.get("brand") and identity.get("brand") == latest_identity["brand"])
-                same_project = (
-                    latest_identity.get("modification_project")
-                    and identity.get("brand") == latest_identity.get("brand")
-                    and identity.get("modification_project") == latest_identity["modification_project"]
-                )
-                same_series = latest_series and (entry.get("item") or {}).get("topic_series_id") == latest_series
-                if same_brand or same_project or same_series:
-                    continue
-                selected = entry
-                break
+            active_brand = content_identity(latest_published or {})["brand"]
+            selected = min(waiting, key=lambda entry: (
+                bool(active_brand) and content_identity(entry)["brand"] != active_brand,
+                -float(entry.get("score") or 0),
+                entry.get("enqueued_at") or "",
+            ), default=None)
             if selected:
                 selected["status"] = "planned"
                 selected["selected_at"] = utc_now()

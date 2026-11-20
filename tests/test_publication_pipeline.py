@@ -235,6 +235,24 @@ def test_batch_reuses_session_and_selects_next_after_registration(tmp_path, fake
     assert all(r['status'] == 'published' for r in PublicationQueue(history_path=history.path).records())
 
 
+def test_brand_run_resumes_between_calls_and_then_switches(tmp_path, fake_browser):
+    from tests.candidate_fixtures import approve_item
+    from tests.test_xiaohongshu_publisher import finalized_batch
+    items = finalized_batch(tmp_path)
+    items[0].update(brand='梅赛德斯-奔驰', model='CLK-LM', title='奔驰CLK-LM的660cc')
+    items[1].update(brand='Mercedes-Benz', model='W196', title='奔驰W196的660cc')
+    for item in items:
+        item['topic_series_id'] = 'brand_models'
+        approve_item(item)
+    (tmp_path / 'manifest.json').write_text(json.dumps({'downloads': items}))
+    history = PublishedHistory(tmp_path / 'history.jsonl')
+    first = pipeline.run_pipeline(tmp_path, history)
+    second = pipeline.run_pipeline(tmp_path, history, max_items=2)
+    assert first['status'] == second['status'] == 'complete'
+    assert [r['brand'] for r in first['results']] == ['Mercedes-Benz']
+    assert [r['brand'] for r in second['results']] == ['梅赛德斯-奔驰', 'Toyota']
+
+
 def test_record_failure_preserves_confirmed_and_restart_does_not_republish(tmp_path, setup_plan, fake_browser, monkeypatch):
     history, plan = setup_plan
     real_record = chrome.record_result

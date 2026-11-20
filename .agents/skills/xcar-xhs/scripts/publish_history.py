@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 
+from content_policy import compact_video_title
+
 try:
     import fcntl
 except ImportError:
@@ -32,7 +34,7 @@ def default_draft_history_path():
 
 
 def normalize_title(title):
-    return re.sub(r"\s+", "", title or "").casefold()
+    return re.sub(r"\s+", "", compact_video_title(title or "")).casefold()
 
 
 @contextlib.contextmanager

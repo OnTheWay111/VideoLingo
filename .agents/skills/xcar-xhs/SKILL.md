@@ -247,7 +247,7 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
 
 为每条核验通过的素材生成标题、正文和话题，放进审核文件的 `publish`，由脚本写入 `<out>/publish.json`。手动定稿时以 X 原帖 ID 为键填写同样的字段。淘汰项保留实际识别出的信息和原因。
 
-- **标题**使用 `品牌_车型_主题`，两个分隔符都是半角下划线，整条标题最长 20 个字符。主题写清视频里能核验的部件、动作或事件。遇到长名称，标题可用能唯一辨认的品牌或车型简称，`brand` 和 `model` 保留正式名称。
+- **标题**使用 `品牌车型主题`，三段直接拼接，例如 `奔驰CLK-LM爬坡发车`。保留车型名内部的连字符和空格，整条标题最长 20 个字符。主题写清视频里能核验的部件、动作或事件。遇到长名称，标题可用能唯一辨认的品牌或车型简称，`brand` 和 `model` 保留正式名称。
 - **正文**写已核实的事实与画面看点，把互动问题单独写进 `discussion_question`。删掉与讨论重复的问句、引导和信息，包括同义改写。若某句承载 `verifiable_fact`，保留正文里的事实，把讨论改为基于该事实的具体取舍或经历。组装发布文案时只追加一次讨论。
 - **话题**依次写独立英文品牌名、独立中文品牌名、车型和其他主题，例如 `#Lotus #路特斯 #LotusEspritV8 #车门把手`。采用品牌官方中文名，或可靠来源中通行的中文译名。品牌与车型合写的标签（如 `#LotusEspritV8`）计作车型标签。其他主题选画面可核实的部件、动作、比赛、改装或场景。通常共 4–6 个，超限时先删宽泛话题。查不到可靠中文名时保留英文品牌标签，共 3–6 个，并在交付时说明。
 - **发布年份**用 `first_year` 记录具体车型或版本的首次发布年份。品牌任务沿用名录；常规任务从可核对的来源确认，并把来源记进 `verification.fact_evidence`。缺少可靠依据填 `null`，在表中显示“待核实”。
@@ -255,7 +255,7 @@ stdout 会打印候选 Markdown 表（含链接、点赞、评论、日期），
 ```json
 {
   "2075618551918985363": {
-    "title": "BMW_Z1_车门下滑",
+    "title": "BMWZ1车门下滑",
     "body": "BMW Z1 的车门可电动下滑收入车侧门槛。",
     "brand": "BMW",
     "model": "Z1",
@@ -318,7 +318,7 @@ python3 .agents/skills/xcar-xhs/scripts/finalize.py \
 python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
   --out work/xfetch-run
 
-# 本次最多逐条发布三条；每条成功并补齐公开链接后才继续
+# 本次最多逐条发布三条，每条确认提交后按品牌顺序继续
 python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
   --out work/xfetch-run --max-items 3
 
@@ -326,6 +326,8 @@ python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
 python3 .agents/skills/xcar-xhs/scripts/publish_pipeline.py \
   --out work/xfetch-run --action draft --tweet-id 原帖ID
 ```
+
+自动发布优先执行已有计划，再从候选池续发最近一次确认发布的品牌。该品牌可发布的视频发完后，以全池评分最高的视频确定下一个品牌。品牌内按评分降序、同分按入池先后排序。保留项和待复核素材跳过。达到 `--max-items` 后结束本次调用，下次按发布历史接续。
 
 发布入口默认无头 Chrome `Default`，`--headed` 显示隔离浏览器，`--timeout` 默认 180 秒。计划仍写入 `xiaohongshu_publish_plan.json` 和 `plans/<原帖ID>.json`，全量队列仍为 `state/publish_queue.json`。发布和草稿分别登记到 `published_videos.jsonl`、`draft_videos.jsonl`。
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把核验候选加入跨批次队列，逐条生成最高分发布计划。"""
+"""把核验候选加入跨批次队列，按品牌连续生成发布计划。"""
 
 import argparse
 import datetime
@@ -191,9 +191,9 @@ def build_plan(out_dir, tweet_id, history, action="publish", queue=None, now=Non
             str(r.get("source_id")) for r in latest_records(history.records())
             if r.get("status") in ACTIVE_STATUSES})
         if not entry:
-            raise ValueError("队列中没有与上一条不相似的素材；相似内容继续保留")
+            raise ValueError("候选池中没有可发布的视频")
         if tweet_id and str(tweet_id) != entry["source_id"]:
-            raise ValueError("publish 仅可生成当前队列最高分且不相似的一条；本次应选择原帖 ID：%s" % entry["source_id"])
+            raise ValueError("publish 须按候选池的品牌发布顺序执行，本次应选择原帖 ID：%s" % entry["source_id"])
         item = entry["item"]
         duplicate = content_duplicate(content_identity(item), latest_records(history.records()),
                                       now=now, statuses=ACTIVE_STATUSES)
@@ -363,7 +363,7 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="finder/finalize 输出目录")
     parser.add_argument("--history-file", default=str(default_history_path()))
     commands = parser.add_subparsers(dest="command", required=True)
-    plan_parser = commands.add_parser("plan", help="全部入选入队，生成下一条最高分且不相似的发布计划")
+    plan_parser = commands.add_parser("plan", help="全部入选入队，按品牌连续选择下一条发布计划")
     plan_parser.add_argument("--tweet-id", help="preview/draft 必填；publish 仅可校验当前自动选择结果")
     plan_parser.add_argument("--action", choices=ACTIONS, default="publish")
     record_parser = commands.add_parser("record", help="仅在网页发布成功或结果待确认后调用")

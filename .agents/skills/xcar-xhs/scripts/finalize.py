@@ -11,6 +11,7 @@ from pathlib import Path
 
 from content_policy import (
     body_with_discussion,
+    compact_video_title,
     content_duplicate,
     content_identity,
     engagement_counts,
@@ -282,6 +283,7 @@ def _finalize(out_dir, publish_file):
     for item in items:
         if not (item.get("verification") or {}).get("content_sha256"):
             content = publish[str(item["candidate"]["id"])]
+            content["title"] = compact_video_title(content["title"])
             content["body"] = strip_repeated_discussion(content["body"], content["discussion_question"])
     apply_publish_content(items, publish)
     reject_explainer_downloads(manifest)

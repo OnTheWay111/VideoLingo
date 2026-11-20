@@ -19,7 +19,7 @@ from caption_models import caption_duplicate, model_index
 from candidate_pool import enqueue_finalized
 from candidate_review import (ACTION_SERIES, EDITORIAL_REVIEW_VERSION, candidate_sort_key,
                               content_digest, file_digest, validate_editorial_review)
-from content_policy import (BRAND_SERIES, SCORE_THRESHOLD, content_duplicate, content_identity,
+from content_policy import (BRAND_SERIES, SCORE_THRESHOLD, compact_video_title, content_duplicate, content_identity,
                             engagement_total, normalize_brand, normalized, strip_repeated_discussion)
 from finalize import apply_publish_content, candidate_result, finalize, load_publish, recover_finalization
 from publication_queue import PublicationQueue, WAITING_STATUSES
@@ -371,6 +371,7 @@ def apply_reviews(state, path, out, registry):
                 continue
             content[source_id].update(brand=target['brand'], model=target['model'], first_year=target['first_year'])
         copy_fields = content[source_id]
+        copy_fields['title'] = compact_video_title(copy_fields['title'])
         copy_fields['body'] = strip_repeated_discussion(copy_fields['body'], copy_fields['discussion_question'])
         approved = copy.deepcopy(item)
         apply_publish_content([approved], content)

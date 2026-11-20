@@ -19,6 +19,7 @@ BRAND_ALIASES = {
     "bmw": "bmw", "宝马": "bmw",
     "mclaren": "mclaren", "迈凯伦": "mclaren",
     "mercedes": "mercedes-benz", "mercedesbenz": "mercedes-benz", "奔驰": "mercedes-benz",
+    "梅赛德斯奔驰": "mercedes-benz",
     "ferrari": "ferrari", "法拉利": "ferrari",
     "porsche": "porsche", "保时捷": "porsche",
     "lamborghini": "lamborghini", "兰博基尼": "lamborghini",
@@ -66,6 +67,12 @@ def engagement_rejection_reason(item, minimum=MIN_TOTAL_ENGAGEMENT):
     return "互动总量 %d ≤ %d（点赞 %d + 评论 %d + 转发 %d%s）" % (
         total, minimum, counts["likes"], counts["replies"], counts["reposts"],
         (" + 收藏 %d" % counts["bookmarks"]) if "bookmarks" in counts else "")
+
+
+def compact_video_title(title):
+    """拼接旧三段式标题，保留车型名称内部的空格和连字符。"""
+    parts = [part.strip() for part in title.split("_")]
+    return "".join(parts) if len(parts) == 3 and all(parts) else title
 
 
 def normalized(value):

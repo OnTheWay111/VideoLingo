@@ -254,7 +254,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert not old_video.exists()
     assert not old_frame.exists()
     assert Path(selected["frames"][0]["file"]).name == "1.Bugatti_奇怪汽车：飞行-翻滚_1.jpg"
-    assert selected["title"] == "Bugatti_Chiron_主动尾翼"
+    assert selected["title"] == "BugattiChiron主动尾翼"
     assert selected["recommendation"] == "可直接发布的入选正文。"
     assert selected["brand"] == "Bugatti"
     assert selected["first_year"] == 2016
@@ -264,7 +264,7 @@ def test_finalize_uses_publish_titles_for_videos_frames_and_reports(tmp_path):
     assert saved["downloads"][0]["video"]["file"] == str(selected_path)
     report = (tmp_path / "REPORT.md").read_text()
     assert "| 品牌 | 车型 | 发布年份 | 标题 | 正文 | 话题 | 点赞 | 收藏 | 转发 | 评论 | X 链接 |" in report
-    assert "| Bugatti | Chiron | 2016 | [Bugatti_Chiron_主动尾翼](<%s>)" % selected_path.as_posix() in report
+    assert "| Bugatti | Chiron | 2016 | [BugattiChiron主动尾翼](<%s>)" % selected_path.as_posix() in report
     assert "| #Bugatti #Chiron #Goodwood2026 | 120 | 13 | 7 | 3 | [X 原帖]" in report
     assert "| Peralta | — | 待核实 | [淘汰视频标题]" in report
     assert report.count("你在意尾翼的哪种功能？") == 1

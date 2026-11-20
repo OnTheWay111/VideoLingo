@@ -98,6 +98,12 @@ def test_history_matches_id_and_normalized_title_without_duplicates(tmp_path):
     assert saved["platform"] == "xiaohongshu"
 
 
+def test_history_matches_old_title_separators(tmp_path):
+    history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
+    history.add("123", "奔驰_CLK-LM_爬坡发车")
+    assert history.check("456", "奔驰CLK-LM爬坡发车")["matched_by"] == "title"
+
+
 def test_unconfirmed_publication_also_blocks_reuse(tmp_path):
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     history.add("123", "待确认结果", status="unconfirmed")
@@ -476,20 +482,21 @@ def test_three_verified_items_can_generate_another_plan_on_the_same_day(tmp_path
     assert next_plan["score"] == 85
 
 
-def test_selection_defers_same_brand_as_previous_note(tmp_path):
+def test_selection_finishes_previous_brand_before_switching(tmp_path):
     finalized_batch(tmp_path)
     history = publish_history.PublishedHistory(tmp_path / "published.jsonl")
     queue = publication_queue.PublicationQueue(history_path=history.path)
     yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).isoformat()
-    history.add("old", "旧 BMW", status="published", brand="BMW", model="M1",
+    history.add("old", "旧本田", status="published", brand="本田", model="NSX",
                 published_at=yesterday, recorded_at=yesterday,
                 note_url="https://www.xiaohongshu.com/explore/old")
 
     plan = xiaohongshu_publisher.build_plan(tmp_path, None, history, queue=queue)
 
-    assert plan["source_id"] == "300"
-    assert plan["brand"] == "Toyota"
-    assert queue.records()[1]["status"] == "queued"
+    assert plan["source_id"] == "100"
+    assert plan["brand"] == "Honda"
+    xiaohongshu_publisher.record_result(tmp_path, history, plan=plan, queue=queue)
+    assert xiaohongshu_publisher.build_plan(tmp_path, None, history)["source_id"] == "200"
 
 
 def test_same_model_and_same_project_are_duplicates_even_from_other_posts():

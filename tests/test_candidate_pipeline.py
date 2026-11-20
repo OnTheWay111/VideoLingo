@@ -170,7 +170,9 @@ def test_pipeline_review_then_enqueue_only_idempotent(tmp_path):
     entries = publication_queue.PublicationQueue(history_path=args.publish_history).records()
     assert {e['status'] for e in entries} == {'queued'}
     material = next(row for row in result['materials'] if row['source_id'] == '1')
-    assert material['title'] == 'Honda_S660_660cc布局' and material['first_year'] == 2015
+    assert material['title'] == 'HondaS660660cc布局' and material['first_year'] == 2015
+    assert json.loads(Path(args.out, 'publish.json').read_text())['1']['title'] == material['title']
+    assert next(e['title'] for e in entries if e['source_id'] == '1') == material['title']
     assert material['topics'] == ['#Honda', '#S660', '#中置发动机']
     assert material['body'].count(copy_fields['discussion_question']) == 1
     assert (material['likes'], material['bookmarks'], material['reposts'], material['replies']) == (101, 0, 1, 1)
