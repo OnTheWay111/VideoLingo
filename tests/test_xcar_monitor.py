@@ -153,6 +153,11 @@ def test_monitor_page_replaces_active_tasks_with_brand_statistics():
     assert 'renderFlow' not in html
     assert 'data-flow' not in html
     assert '品牌维度统计' in html
+    assert 'data-tab="brand"' in html
+    assert 'data-tab="candidate"' in html
+    assert 'data-tab="publish"' in html
+    assert 'id="brand-table"' in html
+    assert 'id="daily-table" hidden' in html
     assert '<th>品牌</th><th>候选池数量</th><th>已发布数量</th>' in html
     assert 'href="/brand?brand=${encodeURIComponent(item.key)}"' in html
     assert '查看该品牌的候选池与已发布视频' in html
