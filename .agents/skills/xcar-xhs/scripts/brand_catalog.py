@@ -18,6 +18,10 @@ from xiaohongshu_publisher import validate_content
 
 
 DEFAULT_MODEL_PAGE_LIMIT = 3
+EXPANSION_CATEGORIES = {
+    'one_off', 'prototype', 'hybrid_concept', 'race_car', 'homologation',
+    'limited_edition', 'special_edition', 'sports_car',
+}
 
 
 def names(value, label):
@@ -31,6 +35,18 @@ def source_url(value):
     if url.scheme not in ('http', 'https') or not url.netloc:
         raise ValueError('名录须提供可核对的来源 URL')
     return value
+
+
+def read_expansion(value, model):
+    if not isinstance(value, dict):
+        raise ValueError('车型 expansion 必须是 JSON 对象：' + model)
+    category = value.get('category')
+    if not isinstance(category, str) or category not in EXPANSION_CATEGORIES:
+        raise ValueError('扩展车型类别无效：' + model)
+    reason, visual_cue = value.get('reason'), value.get('visual_cue')
+    if not all(isinstance(field, str) and field.strip() for field in (reason, visual_cue)):
+        raise ValueError('扩展车型须填写稀有依据和画面辨认点：' + model)
+    return dict(category=category, reason=reason.strip(), visual_cue=visual_cue.strip())
 
 
 def read_catalog(path):
@@ -48,7 +64,7 @@ def read_catalog(path):
     brand_aliases = names(catalog.get('brand_aliases', []), 'brand_aliases')
     if not isinstance(catalog.get('models'), list) or not catalog['models']:
         raise ValueError('名录至少需要一款有来源的车型')
-    seen, targets = set(), []
+    seen, targets, expansions = set(), [], {}
     for row in catalog['models']:
         if not isinstance(row, dict):
             raise ValueError('车型条目必须是 JSON 对象')
@@ -62,9 +78,13 @@ def read_catalog(path):
         if '' in keys or keys & seen:
             raise ValueError('车型正式名或别名与其他条目重叠：' + model)
         seen.update(keys)
-        targets.append(dict(brand=brand.strip(), brand_aliases=brand_aliases, model=model.strip(),
+        model = model.strip()
+        targets.append(dict(brand=brand.strip(), brand_aliases=brand_aliases, model=model,
                             first_year=year, aliases=aliases, source=source_url(row.get('source'))))
+        if 'expansion' in row:
+            expansions[model] = read_expansion(row['expansion'], model)
     catalog['models'] = sorted(targets, key=lambda t: (t['first_year'], t['model']))
+    catalog['model_expansions'] = expansions
     return catalog
 
 
@@ -108,12 +128,15 @@ def model_plan(target):
 
 
 def coverage(catalog, root, entries):
+    expansions = catalog.get('model_expansions', {})
     rows = []
     for target in catalog['models']:
         out = model_dir(root, target)
         path = out / 'candidate_receipt.json'
         receipt = json.loads(path.read_text()) if path.exists() else {}
         row = {**target, 'out': str(out), 'status': receipt.get('status', 'pending')}
+        if target['model'] in expansions:
+            row['expansion'] = expansions[target['model']]
         row.update({key: receipt[key] for key in ('pages_used', 'page_limit', 'budget') if key in receipt})
         if row['status'] == 'complete':
             row['status'] = 'missing_from_pool'
@@ -158,7 +181,7 @@ def main():
     path = args.out / 'brand_catalog.json'
     if not path.exists():
         print(json.dumps(dict(status='awaiting_catalog', brand=args.brand, catalog=str(path),
-                              action='按 Skill 查证品牌成立至今的车型并保存名录'), ensure_ascii=False))
+                              action='按 Skill 查证品牌车型并保存名录'), ensure_ascii=False))
         return 3
     try:
         catalog = read_catalog(path)

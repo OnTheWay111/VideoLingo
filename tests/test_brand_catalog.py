@@ -162,3 +162,60 @@ def test_brand_page_budget_carries_over_review_and_only_explicit_backfill_extend
     args.review_file = review(pending, 'Test Motors', 'Aria')
     assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
     assert coverage(catalog, args.out, queue.records())['status'] == 'complete'
+
+
+def test_brand_catalog_can_extend_one_lineage_across_all_requested_categories(tmp_path):
+    path = make_catalog(tmp_path)
+    data = json.loads(path.read_text())
+    categories = ('one_off', 'prototype', 'hybrid_concept', 'race_car', 'homologation',
+                  'limited_edition', 'special_edition', 'sports_car')
+    for index, category in enumerate(categories):
+        data['models'].append(dict(model=f'Echo Series {index}', first_year=1980 + index,
+                                  source=data['source'], expansion=dict(
+                                      category=category, reason='档案确认车型稀有依据',
+                                      visual_cue='实车专属车身细节')))
+    path.write_text(json.dumps(data))
+
+    result = coverage(read_catalog(path), tmp_path, [])
+    assert result['total'] == 10
+    assert 'expansion' not in result['models'][1]
+    assert tuple(row['expansion']['category'] for row in result['models'][2:]) == categories
+    data['models'][-1]['expansion']['category'] = 'cosmetic_package'
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='扩展车型类别无效'):
+        read_catalog(path)
+
+
+def test_expanded_variant_can_resume_and_be_verified_separately_from_base_model(tmp_path):
+    path = make_catalog(tmp_path)
+    data = json.loads(path.read_text())
+    variant = dict(model='Echo Sprint', first_year=1971, source=data['source'])
+    data['models'].append(variant)
+    path.write_text(json.dumps(data))
+    args = args_for(tmp_path, brand_catalog=path, model='Echo Sprint')
+    backend = FakeBackend([([video(1, 'Echo Sprint at the museum', 92),
+                             video(2, 'Test Motors Echo arrives. Echo Sprint closeup at the museum.', 91)], None)])
+    pending = pipeline.run_pipeline(args, backend)
+    assert pending['status'] == 'awaiting_review' and backend.downloads == ['1']
+
+    base_args = args_for(tmp_path, brand_catalog=path, model='Echo')
+    base_backend = FakeBackend([([video(3, 'Test Motors Echo', 91)], None)])
+    base_pending = pipeline.run_pipeline(base_args, base_backend)
+    base_args.review_file = review(base_pending, 'Test Motors', 'Echo')
+    assert pipeline.run_pipeline(base_args, base_backend)['status'] == 'complete'
+
+    variant['expansion'] = dict(category='homologation', reason='品牌档案确认认证用途',
+                                visual_cue='加宽轮拱和独立的后窗出风口')
+    path.write_text(json.dumps(data))
+    args.review_file = review(pending, 'Test Motors', 'Echo')
+    resumed = pipeline.run_pipeline(args, backend)
+    assert resumed['status'] == 'awaiting_review' and resumed['job_id'] == pending['job_id']
+    assert backend.downloads == ['1', '2']
+    assert resumed['pages_used'] == 1
+    request = json.loads(Path(resumed['review_request']).read_text())
+    assert request['topic_plan']['brand_expansion'] == variant['expansion']
+    assert variant['expansion']['visual_cue'] in request['items']['2']['series_question']
+    args.review_file = review(resumed, 'Test Motors', 'Echo Sprint')
+    assert pipeline.run_pipeline(args, backend)['status'] == 'complete'
+    records = PublicationQueue(history_path=args.publish_history).records()
+    assert {row['item']['model'] for row in records} == {'Echo', 'Echo Sprint'}

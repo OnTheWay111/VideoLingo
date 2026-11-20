@@ -274,14 +274,17 @@ def screen_caption(entry, state, models, mechanisms, race_events=None):
     if color:
         entry.update(status='skipped', color_only=color, reason='汽车机关图鉴：原帖仅展示车身变色')
         return
+    plan = state['plan']
+    # 扩展车型原帖可能同时提到基础款，比较对象在池内不能代替版本身份核验。
+    expansion_target = plan.get('brand_target') if plan.get('brand_expansion') else None
     mechanism = match_recent_mechanism(caption, mechanisms)
-    if mechanism:
+    if mechanism and (not expansion_target or brand_catalog.matches_identity(expansion_target, mechanism)):
         entry.update(status='skipped', recent_duplicate=mechanism,
                      reason='下载前命中近 30 天同车型同机构：%s %s · %s' %
                             (mechanism['brand'], mechanism['model'], mechanism['mechanism']))
         return
     match = caption_duplicate(caption, models)
-    if match:
+    if match and (not expansion_target or brand_catalog.matches_identity(expansion_target, match)):
         entry.update(status='skipped', model_duplicate=match,
                      reason='下载前同车型（%s）：%s %s · %s' %
                             (match['origin'], match['brand'], match['model'], match['source_id']))
@@ -310,6 +313,11 @@ def review_request(state, out):
         }
         if state['plan'].get('brand_target'):
             requests[source_id]['series_question'] = '画面中哪些特征与名录来源能确认指定车型？'
+            expansion = state['plan'].get('brand_expansion')
+            if expansion:
+                requests[source_id]['series_question'] += (
+                    f"请核对车型入选依据（{expansion['reason']}）及辨认点（{expansion['visual_cue']}）。"
+                    '写明如何从实车及出处确认具体版本。')
         if state['plan'].get('editorial_review_version'):
             requests[source_id]['verification']['editorial'] = {
                 'opening_action_at_sec': None, 'discussion_basis': '', 'follow_up_topic': '',
@@ -554,6 +562,12 @@ def run_pipeline(args, backend=None):
                          path=history.path.with_name('monitor_events.jsonl'))
         elif state['history_file'] != str(history.path):
             raise ValueError('恢复任务不能切换发布历史')
+        if target:
+            expansion = catalog['model_expansions'].get(target['model'])
+            if expansion:
+                state['plan']['brand_expansion'] = expansion
+            else:
+                state['plan'].pop('brand_expansion', None)
         brand_job = bool(state['plan'].get('brand_target'))
         max_pages = args.max_pages
         if max_pages is None:
