@@ -21,6 +21,7 @@ DEFAULT_MODEL_PAGE_LIMIT = 3
 EXPANSION_CATEGORIES = {
     'one_off', 'prototype', 'concept_car', 'hybrid_concept', 'race_car', 'homologation',
     'limited_edition', 'special_edition', 'sports_car',
+    'unusual_structure', 'regional_exclusive', 'factory_special_purpose',
 }
 
 

@@ -168,7 +168,8 @@ def test_brand_catalog_can_extend_one_lineage_across_all_requested_categories(tm
     path = make_catalog(tmp_path)
     data = json.loads(path.read_text())
     categories = ('one_off', 'prototype', 'concept_car', 'hybrid_concept', 'race_car', 'homologation',
-                  'limited_edition', 'special_edition', 'sports_car')
+                  'limited_edition', 'special_edition', 'sports_car',
+                  'unusual_structure', 'regional_exclusive', 'factory_special_purpose')
     for index, category in enumerate(categories):
         data['models'].append(dict(model=f'Echo Series {index}', first_year=1980 + index,
                                   source=data['source'], expansion=dict(
@@ -177,7 +178,7 @@ def test_brand_catalog_can_extend_one_lineage_across_all_requested_categories(tm
     path.write_text(json.dumps(data))
 
     result = coverage(read_catalog(path), tmp_path, [])
-    assert result['total'] == 11
+    assert result['total'] == len(data['models'])
     assert 'expansion' not in result['models'][1]
     assert tuple(row['expansion']['category'] for row in result['models'][2:]) == categories
     data['models'][-1]['expansion']['category'] = 'cosmetic_package'
