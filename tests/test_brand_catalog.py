@@ -238,6 +238,37 @@ def collection_copy(result, detail, body):
                              topics=['TestMotors', 'TestMotorsEcho', detail])
 
 
+def test_collection_review_can_correct_approved_item_before_commit(tmp_path):
+    args = args_for(tmp_path, brand='Test Motors', brand_catalog=None, model='Echo', max_pages=1)
+    backend = FakeBackend([([video(1, 'Test Motors Echo', 200), video(2, 'Test Motors Echo', 200)], None)])
+    pending = pipeline.collect_model(args, backend)
+    path = Path(pending['review_request'])
+    request = json.loads(path.read_text())
+    collection_copy(request['items']['1'], '座舱', '片段展示双环仪表。')
+    args.review_file = str(path.parent / 'review.json')
+    Path(args.review_file).write_text(json.dumps(request))
+    assert pipeline.collect_model(args, backend)['status'] == 'awaiting_review'
+    request = json.loads(path.read_text())
+    collection_copy(request['items']['2'], '车门', '片段展示无框车门。')
+    original = json.loads((path.parent / 'collection_state.json').read_text())['items']['1']
+    request['items']['1'] = dict(decision='rejected', reason='画面显示车型不符',
+                                video_sha256=original['video_sha256'])
+    Path(args.review_file).write_text(json.dumps(request))
+    result = pipeline.collect_model(args, backend)
+    assert result['status'] == 'complete'
+    assert [item['source_id'] for item in result['materials']] == ['2']
+    assert result['rejected'] == [{'source_id': '1', 'reason': '画面显示车型不符'}]
+    queue = PublicationQueue(history_path=args.publish_history)
+    saved = queue.records()
+    state = json.loads((path.parent / 'collection_state.json').read_text())
+    request['items'] = {'2': dict(decision='rejected', reason='再次复核',
+                                  video_sha256=state['items']['2']['video_sha256'])}
+    Path(args.review_file).write_text(json.dumps(request))
+    with pytest.raises(ValueError, match='批次已写回候选池'):
+        pipeline.collect_model(args, backend)
+    assert queue.records() == saved
+
+
 def test_model_collection_requires_copy_on_the_normal_cli_path(tmp_path, monkeypatch):
     from monitor import pool_item_view
 

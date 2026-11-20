@@ -58,7 +58,9 @@ def review_items(state, review):
     target = state['target']
     for source_id, result in decisions.items():
         entry = state['items'][source_id]
-        if entry['status'] != 'awaiting_review':
+        correcting = (entry['status'] == 'approved' and isinstance(result, dict)
+                      and result.get('decision') == 'rejected')
+        if entry['status'] != 'awaiting_review' and not correcting:
             continue
         try:
             if not isinstance(result, dict):
@@ -166,7 +168,15 @@ def collect_locked(args, backend, out, target, queue, history):
     failures = []
     checkpoint()
     if args.review_file:
-        errors = review_items(state, read_json(Path(args.review_file)))
+        review = read_json(Path(args.review_file))
+        receipt = read_json(receipt_path, {})
+        if (receipt.get('status') == 'complete' and isinstance(review, dict)
+                and isinstance(review.get('items'), dict)
+                and any(state['items'].get(source_id, {}).get('status') == 'approved'
+                        and isinstance(result, dict) and result.get('decision') == 'rejected'
+                        for source_id, result in review['items'].items())):
+            raise ValueError('批次已写回候选池，请通过候选池版本管理撤回素材')
+        errors = review_items(state, review)
         failures.extend(dict(source_id=source_id, error=error) for source_id, error in errors.items())
         checkpoint()
     else:
