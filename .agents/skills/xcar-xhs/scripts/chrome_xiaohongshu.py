@@ -5,10 +5,12 @@ import argparse
 import contextlib
 import base64
 import datetime
+import hashlib
 import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,9 @@ from xiaohongshu_publisher import (
 CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_DATA = "~/Library/Application Support/Google/Chrome"
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official&from=menu&target=video"
+CHROME_SAFE_STORAGE = "Chrome Safe Storage"
+CHROME_EPOCH_OFFSET = 11644473600
+XHS_COOKIE_DOMAIN = "xiaohongshu.com"
 
 
 def free_port():
@@ -54,6 +59,72 @@ def copy_profile(source_dir, target_dir, profile="Default"):
         path = source / name
         if path.is_file():
             shutil.copy2(path, target / name)
+
+
+def chrome_safe_storage_key():
+    """读取钥匙串里的 Chrome Safe Storage 密钥，用于解密 Chrome 的 Cookie 库。"""
+    proc = subprocess.run(
+        ["security", "find-generic-password", "-s", CHROME_SAFE_STORAGE, "-a", "Chrome", "-w"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError("读取钥匙串 %s 失败，无法解密小红书登录 Cookie" % CHROME_SAFE_STORAGE)
+    return hashlib.pbkdf2_hmac("sha1", proc.stdout.strip().encode(), b"saltysalt", 1003, 16)
+
+
+def decrypt_cookie_value(encrypted, key, host_key):
+    """解密 Chrome v10/v11 Cookie；新版 Chrome 的明文前有 32 字节 host 摘要。"""
+    if not encrypted or encrypted[:3] not in (b"v10", b"v11"):
+        return None
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
+    data = decryptor.update(encrypted[3:]) + decryptor.finalize()
+    pad = data[-1] if data else 0
+    if not 1 <= pad <= 16:
+        return None
+    data = data[:-pad]
+    prefix = hashlib.sha256(host_key.encode()).digest()
+    if data.startswith(prefix):
+        data = data[len(prefix):]
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def load_xhs_cookies(profile="Default"):
+    """直接解密 Chrome 的 Cookies 库；新版 Chrome 复制配置后不再加载旧 Cookie。"""
+    source = Path(os.path.expanduser(CHROME_DATA)) / profile / "Cookies"
+    if not source.is_file():
+        raise RuntimeError("找不到 Chrome %s 的 Cookies 数据库" % profile)
+    key = chrome_safe_storage_key()
+    with tempfile.TemporaryDirectory(prefix="xhs-cookies-") as tmp:
+        copy = Path(tmp) / "Cookies"
+        shutil.copy2(source, copy)
+        con = sqlite3.connect(str(copy))
+        try:
+            rows = con.execute(
+                "SELECT host_key, name, value, encrypted_value, path, expires_utc, "
+                "is_secure, is_httponly, samesite FROM cookies WHERE host_key LIKE ?",
+                ("%" + XHS_COOKIE_DOMAIN,)).fetchall()
+        finally:
+            con.close()
+    cookies = []
+    for host, name, plain, encrypted, path, expires, secure, http_only, same_site in rows:
+        value = plain or decrypt_cookie_value(encrypted, key, host)
+        if not value:
+            continue
+        cookie = {"name": name, "value": value, "domain": host, "path": path or "/"}
+        if secure:
+            cookie["secure"] = True
+        if http_only:
+            cookie["httpOnly"] = True
+        if expires:
+            cookie["expires"] = round(expires / 1e6 - CHROME_EPOCH_OFFSET)
+        if same_site in (0, 1, 2):
+            cookie["sameSite"] = {0: "None", 1: "Lax", 2: "Strict"}[same_site]
+        cookies.append(cookie)
+    return cookies
 
 
 def login_page(text, url):
@@ -147,17 +218,21 @@ class ChromeSession:
         self.call("Network.setUserAgentOverride", {
             "userAgent": version.get("userAgent", "").replace("HeadlessChrome", "Chrome"),
         })
-        count = 0
-        for _ in range(20):
-            cookies = self.call("Storage.getCookies").get("cookies", [])
-            count = sum("xiaohongshu.com" in cookie.get("domain", "") for cookie in cookies)
-            if count:
-                break
-            time.sleep(0.5)
+        count = self.inject_cookies()
         if not count:
-            raise RuntimeError("Chrome %s 配置中没有小红书登录 Cookie" % self.profile)
-        print("已复制 Chrome 小红书会话（不输出 Cookie 值）", flush=True)
+            raise RuntimeError("Chrome %s 配置中没有可用的小红书登录 Cookie" % self.profile)
+        print("已注入 Chrome 小红书会话（%d 条 Cookie，不输出值）" % count, flush=True)
         return self
+
+    def inject_cookies(self):
+        count = 0
+        for cookie in load_xhs_cookies(self.profile):
+            try:
+                if self.call("Network.setCookie", cookie).get("success"):
+                    count += 1
+            except RuntimeError:
+                continue
+        return count
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.ws:

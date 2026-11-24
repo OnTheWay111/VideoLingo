@@ -4,8 +4,8 @@
 
 ## 一、已验证的成功路径
 
-1. 按固定配置复制 Chrome `Default` 的 `Cookies`、`Preferences` 和 `Local State` 到临时隔离配置，不修改原 Chrome。
-2. 启动独立 Chrome 和 CDP，等待 Cookie 存储加载，只统计域名，不打印 Cookie 值。
+1. 按固定配置复制 Chrome `Default` 的 `Preferences` 和 `Local State` 到临时隔离配置，不修改原 Chrome。
+2. 启动独立 Chrome 和 CDP；用钥匙串 `Chrome Safe Storage` 密钥解密原 `Cookies` 库中 `xiaohongshu.com` 的 Cookie，通过 `Network.setCookie` 注入隔离会话（只统计条数、不打印值、不写文件）。
 3. 用 `Browser.getVersion` 取得 UA，把 `HeadlessChrome` 替换为 `Chrome`，避免平台进入降级页面。
 4. 打开发布页，确认账号和“上传视频”页面，而不是短信登录页。
 5. 通过 `DOM.setFileInputFiles` 上传视频，等到标题编辑页出现。
@@ -21,6 +21,7 @@
 |---|---|---|
 | 内置浏览器已登录，但自动化拿不到会话 | 内置浏览器与个人 Chrome 是不同会话 | 固定复制本机 Chrome `Default` 会话到临时隔离配置，不再使用内置浏览器登录态 |
 | Cookie 检查一直显示 0 | CDP 返回值已解包，又重复读取 `result.cookies` | `call()` 只解包一次；Cookie 读取使用 `call(...).get("cookies", [])` |
+| 复制 `Default` 后 CDP 里 Cookie 仍为 0 条 | Chrome 158 起不再加载复制配置中的旧 `Cookies`，副本库启动即被清空；原库 Cookie 仍可解密 | 不再依赖复制登录态，改为解密原库后 `Network.setCookie` 注入；注入失败时才报“没有可用的小红书登录 Cookie” |
 | Chrome 启动初期 Cookie 仍为空 | Cookie 存储尚未加载 | 最多等待 10 秒轮询，不在首次空结果时立即失败 |
 | 页面出现“不支持视频展示”或笔记首页只有菜单 | `HeadlessChrome` 标识触发平台降级 | 使用真实版本 UA，将 `HeadlessChrome` 替换为 `Chrome` |
 | 标题编辑页已出现，但填写时报找不到输入框 | CSS 选择器中的引号转义不一致 | 使用 `input[placeholder*=标题]` 等简单选择器，并读取实际值复核 |
